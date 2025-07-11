@@ -55,7 +55,7 @@ jobs:
           status: pending
       - task: compile-test-task
         image: mono_ubuntu_2404
-        file: eloqdoc_pr/concourse/tasks/pr_ent.yml
+        file: eloqdoc_pr/concourse/tasks/pr.ent.yml
         vars:
           cass-host: ((cassandra-host))
         privileged: true
