@@ -373,10 +373,10 @@ Status EloqGlobalOptions::add(moe::OptionSection* options) {
     eloqOptions
         .addOptionChaining("storage.eloq.storage.rocksdbCloudPurgerPeriodicitySecs",
                            "eloqRocksdbCloudPurgerPeriodicitySecs",
-                           moe::Unsigned,
+                           moe::Int,
                            "RocksDB Cloud purger periodicity (seconds) in seconds.")
-        .validRange(10, UINT32_MAX)
-        .setDefault(moe::Value(10 * 60u));
+        .validRange(10, INT_MAX)
+        .setDefault(moe::Value(10 * 60));
 
     eloqOptions
         .addOptionChaining("storage.eloq.storage.rocksdbMaxBackgroundJobs",
@@ -805,7 +805,7 @@ Status EloqGlobalOptions::store(const moe::Environment& params,
     }
     if (params.count("storage.eloq.storage.rocksdbCloudPurgerPeriodicitySecs")) {
         eloqGlobalOptions.rocksdbCloudPurgerPeriodicitySecs =
-            params["storage.eloq.storage.rocksdbCloudPurgerPeriodicitySecs"].as<uint32_t>();
+            params["storage.eloq.storage.rocksdbCloudPurgerPeriodicitySecs"].as<int>();
     }
 
     if (params.count("storage.eloq.storage.rocksdbMaxBackgroundJobs")) {
