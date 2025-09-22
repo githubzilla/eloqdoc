@@ -640,11 +640,12 @@ void EloqKVEngine::initDataStoreService() {
         eloqGlobalOptions.txlogRocksDBCloudFileDeletionDelay;
     rocksdb_cloud_config.purger_periodicity_millis_ =
         static_cast<size_t>(eloqGlobalOptions.rocksdbCloudPurgerPeriodicitySecs) * 1000;
+    rocksdb_cloud_config.branch_name_ = dss_branch_name;
 
     bool enable_cache_replacement_ =
         fake_config_reader.GetBoolean("local", "enable_cache_replacement", false);
     auto ds_factory = std::make_unique<EloqDS::RocksDBCloudDataStoreFactory>(
-        dss_branch_name, rocksdb_config, rocksdb_cloud_config, enable_cache_replacement_);
+        rocksdb_config, rocksdb_cloud_config, enable_cache_replacement_);
 #elif defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB)
     // setup rocksdb data store
     INIReader fake_config_reader(nullptr, 0);
@@ -669,8 +670,7 @@ void EloqKVEngine::initDataStoreService() {
 #if defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_S3) || \
     defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_GCS)
         // TODO(lzx):move setup datastore to data_store_service
-        auto ds = std::make_unique<EloqDS::RocksDBCloudDataStore>(dss_branch_name,
-                                                                  rocksdb_cloud_config,
+        auto ds = std::make_unique<EloqDS::RocksDBCloudDataStore>(rocksdb_cloud_config,
                                                                   rocksdb_config,
                                                                   (opt_bootstrap || is_single_node),
                                                                   enable_cache_replacement_,
