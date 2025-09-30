@@ -109,6 +109,10 @@ elif with_log_state == "ROCKSDB_CLOUD_S3":
     env.Append(CPPDEFINES=["LOG_STATE_TYPE_RKDB_S3"])
 elif with_log_state == "ROCKSDB_CLOUD_GCS":
     env.Append(CPPDEFINES=["LOG_STATE_TYPE_RKDB_GCS"])
+else
+    # Default fallback (or raise an error if invalid)
+    print("Warning: Unknown WITH_LOG_STATE '{}'. Defaulting to ROCKSDB.".format(with_log_state))
+    env.Append(CPPDEFINES=["LOG_STATE_TYPE_RKDB"])
 
 if os.environ.get("FORK_HM_PROCESS", "0") in ("1", "ON", "on", "true", "True"):
     env.Append(CPPDEFINES=["FORK_HM_PROCESS"])
