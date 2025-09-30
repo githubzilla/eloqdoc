@@ -246,7 +246,7 @@ if data_store_type == DATA_STORE_TYPE_ROCKSDB_CLOUD:
         env.Append(LIBS=["aws-cpp-sdk-kinesis", "aws-cpp-sdk-s3", "rocksdb-cloud-aws"])
     elif data_store_type_str == "ELOQDSS_ROCKSDB_CLOUD_GCS":
         env.Append(LIBS=["google_cloud_cpp_common"])
-	env.Append(LIBS=["google_cloud_cpp_storage", "rocksdb-cloud-gcp"])
+        env.Append(LIBS=["google_cloud_cpp_storage", "rocksdb-cloud-gcp"])
 
 env.Library(
     target="storage_eloq_core",
