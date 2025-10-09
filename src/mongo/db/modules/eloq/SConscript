@@ -109,7 +109,7 @@ elif with_log_state == "ROCKSDB_CLOUD_S3":
     env.Append(CPPDEFINES=["LOG_STATE_TYPE_RKDB_S3"])
 elif with_log_state == "ROCKSDB_CLOUD_GCS":
     env.Append(CPPDEFINES=["LOG_STATE_TYPE_RKDB_GCS"])
-else
+else:
     # Default fallback (or raise an error if invalid)
     print("Error: Unknown WITH_LOG_STATE '{}'.".format(with_log_state))
     Exit(1)
