@@ -87,7 +87,6 @@ Run the following commands from the repository root:
 cmake -S src/mongo/db/modules/eloq \
       -B src/mongo/db/modules/eloq/build \
       -DCMAKE_INSTALL_PREFIX=$INSTALL_PREFIX \
-      -DWITH_LOG_STATE=ROCKSDB_CLOUD_S3 \
       -DWITH_DATA_STORE=ELOQDSS_ROCKSDB_CLOUD_S3
 cmake --build src/mongo/db/modules/eloq/build -j8
 cmake --install src/mongo/db/modules/eloq/build
