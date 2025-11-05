@@ -585,7 +585,7 @@ void EloqKVEngine::initDataStoreService(
     bool isSingleNode,
     uint32_t node_id,
     uint32_t native_ng_id,
-    const std::unordered_map<uint32_t, std::vector<txservice::NodeConfig>>& ng_configs) {
+    const std::unordered_map<uint32_t, std::vector<txservice::NodeConfig>>& ngConfigs) {
     auto localIp = eloqGlobalOptions.localAddr.host();
     auto localPort = eloqGlobalOptions.localAddr.port();
     txservice::CatalogFactory* catalog_factories[3] = {nullptr, nullptr, &_catalogFactory};
@@ -608,55 +608,20 @@ void EloqKVEngine::initDataStoreService(
         ds_config.SetThisNode(localIp, EloqDS::DataStoreServiceClient::TxPort2DssPort(localPort));
         // Fetch ds topology from peer node
         if (!EloqDS::DataStoreService::FetchConfigFromPeer(ds_peer_node, ds_config)) {
-            LOG(ERROR) << "Failed to fetch config from peer node: " << ds_peer_node;
-            return;
+            error() << "Failed to fetch config from peer node: " << ds_peer_node;
+            uasserted(ErrorCodes::InternalError,
+                      +"DataStoreService initialization failed: unable to fetch config from peer " +
+                          ds_peer_node);
         }
     } else {
+        if (ngConfigs.size() > 1) {
+            error() << "DSS peer node must be provided in multi-node deployment.";
+            uasserted(ErrorCodes::InternalError, "DataStoreService initialization failed");
+        }
+
         EloqDS::DataStoreServiceClient::TxConfigsToDssClusterConfig(
-            dss_node_id, native_ng_id, ng_configs, dss_leader_id, ds_config);
+            dss_node_id, native_ng_id, ngConfigs, dss_leader_id, ds_config);
     }
-
-
-    // std::string dss_config_file_path = eloqGlobalOptions.dataStoreServiceConfigFilePath;
-    // if (dss_config_file_path == "") {
-    //     dss_config_file_path = _dbPath + "/dss_config.ini";
-    // }
-    // log() << "Data Store Service Config File Path: " << dss_config_file_path;
-    // EloqDS::DataStoreServiceClusterManager ds_config;
-    // if (ds_config.Load(dss_config_file_path)) {
-    //     log() << "EloqDataStoreService loaded config file: " << dss_config_file_path;
-    // } else {
-    //     if (!ds_peer_node.empty()) {
-    //         ds_config.SetThisNode(localIp, localPort + 7);
-    //         // Fetch ds topology from peer node
-    //         if (!EloqDS::DataStoreService::FetchConfigFromPeer(ds_peer_node, ds_config)) {
-    //             error() << "Failed to fetch config from peer node: " << ds_peer_node;
-    //             uasserted(ErrorCodes::InternalError, "DataStoreService initialization failed");
-    //         }
-    //
-    //         // Save the fetched config to the local file
-    //         if (!ds_config.Save(dss_config_file_path)) {
-    //             error() << "Failed to save config to file: " << dss_config_file_path;
-    //             uasserted(ErrorCodes::InternalError,
-    //                       "DataStoreService failed to save config to file: " +
-    //                           dss_config_file_path);
-    //         }
-    //     } else if (opt_bootstrap || is_single_node) {
-    //         // Initialize the data store service config
-    //         ds_config.Initialize(localIp, localPort + 7);
-    //         if (!ds_config.Save(dss_config_file_path)) {
-    //             error() << "Failed to save config to file: " << dss_config_file_path;
-    //             uasserted(ErrorCodes::InternalError,
-    //                       "DataStoreService failed to save config to file: " +
-    //                           dss_config_file_path);
-    //         }
-    //     } else {
-    //         error() << "Failed to load data store service config file: " << dss_config_file_path;
-    //         uasserted(ErrorCodes::InternalError,
-    //                   "DataStoreService initialization failed, config file not found: " +
-    //                       dss_config_file_path);
-    //     }
-    // }
 
 #if defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_S3) || \
     defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_GCS)
@@ -718,8 +683,17 @@ void EloqKVEngine::initDataStoreService(
         ds_config, dss_config_file_path, _dbPath + "/DSMigrateLog", std::move(ds_factory));
 
     // setup local data store service, the data store will start data store if needed.
-    bool ret = Eloq::dataStoreService->StartService(
+    bool ret = true;
+#if defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB)
+    // For non shared storage like rocksdb,
+    // we always set create_if_missing to true
+    // since non conflicts will happen under
+    // multi-node deployment.
+    ret = Eloq::dataStoreService->StartService(true, dss_leader_id, dss_node_id);
+#else
+    ret = Eloq::dataStoreService->StartService(
         (opt_bootstrap || isSingleNode), dss_leader_id, dss_node_id);
+#endif
     if (!ret) {
         error() << "Failed to start data store service";
         uasserted(ErrorCodes::InternalError, "DataStoreService failed to start service");
