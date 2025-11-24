@@ -226,12 +226,13 @@ export CXX=`which g++`
 export CC=`which gcc`
 
 SCONS_VARIANT=${BUILD_TYPE}
-env OPEN_LOG_SERVICE=$OPEN_LOG_SERVICE FORK_HM_PROCESS=$FORK_HM_PROCESS WITH_DATA_STORE=$DATA_STORE_TYPE WITH_LOG_STATE=$WITH_LOG_STATE EXT_TX_PROC_ENABLED=1 ELOQ_MODULE_ENABLED=1 \
+env OPEN_LOG_SERVICE=$OPEN_LOG_SERVICE FORK_HM_PROCESS=$FORK_HM_PROCESS WITH_DATA_STORE=$DATA_STORE_TYPE WITH_LOG_STATE=$WITH_LOG_STATE \
 python2 scripts/buildscripts/scons.py \
     MONGO_VERSION=4.0.3 \
     VARIANT_DIR=${SCONS_VARIANT} \
     CFLAGS="-Wno-nonnull" \
     CXXFLAGS="-Wno-nonnull -Wno-class-memaccess -Wno-interference-size -Wno-redundant-move" \
+    CPPDEFINES="ELOQ_MODULE_ENABLED EXT_TX_PROC_ENABLED" \
     CXX=${CXX} \
     CC=${CC} \
     $( [ "$ID" == "centos" ] && echo "--variables-files=env.vars" ) \
