@@ -112,6 +112,11 @@ public:
     int rocksdbCloudSstFileCacheNumShardBits{5};  // default 1 shard
     std::string rocksdbTargetFileSizeBase;
     std::string rocksdbSstFilesSizeLimit;
+    std::string rocksdbSoftPendingCompactionBytesLimit;
+    std::string rocksdbHardPendingCompactionBytesLimit;
+    size_t rocksdbMaxSubcompactions;
+    std::string rocksdbWriteRateLimit;
+    bool rocksdbDisableWriteStall;
     uint32_t rocksdbCloudReadyTimeout{0};
     uint32_t rocksdbCloudFileDeletionDelay{0};
     uint32_t rocksdbCloudPurgerPeriodicitySecs{10 * 60};  // default 10 minutes

@@ -645,6 +645,14 @@ void EloqKVEngine::initDataStoreService(
     rocksdb_config.query_worker_num_ = 10 * serverGlobalParams.reservedThreadNum;
     rocksdb_config.max_background_jobs_ = eloqGlobalOptions.rocksdbMaxBackgroundJobs;
     rocksdb_config.max_subcompactions_ = eloqGlobalOptions.rocksdbMaxSubCompactions;
+    rocksdb_config.soft_pending_compaction_bytes_limit_bytes_ =
+        txlog::parse_size(eloqGlobalOptions.rocksdbSoftPendingCompactionBytesLimit);
+    rocksdb_config.hard_pending_compaction_bytes_limit_bytes_ =
+        txlog::parse_size(eloqGlobalOptions.rocksdbHardPendingCompactionBytesLimit);
+    rocksdb_config.max_subcompactions_ = eloqGlobalOptions.rocksdbMaxSubCompactions;
+    rocksdb_config.write_rate_limit_bytes_ =
+        txlog::parse_size(eloqGlobalOptions.rocksdbWriteRateLimit);
+    rocksdb_config.disable_write_stall_ = eloqGlobalOptions.rocksdbDisableWriteStall;
 
     rocksdb_config.storage_path_ = eloqGlobalOptions.rocksdbCloudStoragePath;
     if (rocksdb_config.storage_path_.empty()) {

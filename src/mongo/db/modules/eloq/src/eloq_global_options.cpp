@@ -361,6 +361,37 @@ Status EloqGlobalOptions::add(moe::OptionSection* options) {
                            "RocksDB sst files size limit")
         .setDefault(moe::Value("500MB"));
     eloqOptions
+        .addOptionChaining("storage.eloq.storage.rocksdbSoftPendingCompactionBytesLimit",
+                           "eloqRocksdbSoftPendingCompactionBytesLimit",
+                           moe::String,
+                           "RocksDB soft pending compaction bytes limit")
+        .setDefault(moe::Value("64GB"));
+    eloqOptions
+        .addOptionChaining("storage.eloq.storage.rocksdbHardPendingCompactionBytesLimit",
+                           "eloqRocksdbHardPendingCompactionBytesLimit",
+                           moe::String,
+                           "RocksDB hard pending compaction bytes limit")
+        .setDefault(moe::Value("256GB"));
+    eloqOptions
+        .addOptionChaining("storage.eloq.storage.rocksdbMaxSubCompactions",
+                           "eloqRocksdbMaxSubCompactions",
+                           moe::Int,
+                           "RocksDB max subcompactions")
+        .validRange(1, 1024)
+        .setDefault(moe::Value(1));
+    eloqOptions
+        .addOptionChaining("storage.eloq.storage.rocksdbWriteRateLimit",
+                           "eloqRocksdbWriteRateLimit",
+                           moe::String,
+                           "RocksDB write rate limit per second")
+        .setDefault(moe::Value("0MB"));  // 0 means no limit
+    eloqOptions
+        .addOptionChaining("storage.eloq.storage.rocksdbDisableWriteStall",
+                           "eloqRocksdbDisableWriteStall",
+                           moe::Bool,
+                           "Disable RocksDB write stall")
+        .setDefault(moe::Value(false));
+    eloqOptions
         .addOptionChaining("storage.eloq.storage.rocksdbCloudReadyTimeout",
                            "eloqRocksdbCloudReadyTimeout",
                            moe::Int,
@@ -389,14 +420,6 @@ Status EloqGlobalOptions::add(moe::OptionSection* options) {
                            "RocksDB Cloud Max Background Jobs")
         .validRange(1, 1024)
         .setDefault(moe::Value(4));
-
-    eloqOptions
-        .addOptionChaining("storage.eloq.storage.rocksdbMaxSubCompactions",
-                           "eloqrocksdbMaxSubCompactions",
-                           moe::Int,
-                           "RocksDB Cloud Max SubCompactions")
-        .validRange(1, 1024)
-        .setDefault(moe::Value(1));
 
     // EloqStore Options
     eloqOptions
@@ -942,6 +965,26 @@ Status EloqGlobalOptions::store(const moe::Environment& params,
         eloqGlobalOptions.rocksdbSstFilesSizeLimit =
             params["storage.eloq.storage.rocksdbSstFilesSizeLimit"].as<std::string>();
     }
+    if (params.count("storage.eloq.storage.rocksdbSoftPendingCompactionBytesLimit")) {
+        eloqGlobalOptions.rocksdbSoftPendingCompactionBytesLimit =
+            params["storage.eloq.storage.rocksdbSoftPendingCompactionBytesLimit"].as<std::string>();
+    }
+    if (params.count("storage.eloq.storage.rocksdbHardPendingCompactionBytesLimit")) {
+        eloqGlobalOptions.rocksdbHardPendingCompactionBytesLimit =
+            params["storage.eloq.storage.rocksdbHardPendingCompactionBytesLimit"].as<std::string>();
+    }
+    if (params.count("storage.eloq.storage.rocksdbMaxSubCompactions")) {
+        eloqGlobalOptions.rocksdbMaxSubCompactions =
+            params["storage.eloq.storage.rocksdbMaxSubCompactions"].as<int>();
+    }
+    if (params.count("storage.eloq.storage.rocksdbWriteRateLimit")) {
+        eloqGlobalOptions.rocksdbWriteRateLimit =
+            params["storage.eloq.storage.rocksdbWriteRateLimit"].as<std::string>();
+    }
+    if (params.count("storage.eloq.storage.rocksdbDisableWriteStall")) {
+        eloqGlobalOptions.rocksdbDisableWriteStall =
+            params["storage.eloq.storage.rocksdbDisableWriteStall"].as<bool>();
+    }
     if (params.count("storage.eloq.storage.rocksdbCloudReadyTimeout")) {
         eloqGlobalOptions.rocksdbCloudReadyTimeout =
             params["storage.eloq.storage.rocksdbCloudReadyTimeout"].as<int>();
@@ -958,11 +1001,6 @@ Status EloqGlobalOptions::store(const moe::Environment& params,
     if (params.count("storage.eloq.storage.rocksdbMaxBackgroundJobs")) {
         eloqGlobalOptions.rocksdbMaxBackgroundJobs =
             params["storage.eloq.storage.rocksdbMaxBackgroundJobs"].as<int>();
-    }
-
-    if (params.count("storage.eloq.storage.rocksdbMaxSubCompactions")) {
-        eloqGlobalOptions.rocksdbMaxSubCompactions =
-            params["storage.eloq.storage.rocksdbMaxSubCompactions"].as<int>();
     }
 
     // EloqStore Options
