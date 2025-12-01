@@ -36,7 +36,7 @@ update_config_template() {
 if [[ -d "$WORKSPACE/eloqdoc_src/concourse" ]]; then
     pushd "$WORKSPACE/eloqdoc_src/concourse"
 elif [[ -d "$WORKSPACE/eloqdoc_pr/concourse" ]]; then
-    pushd "$WORKSPACE/eloqdoc_pr.concourse"
+    pushd "$WORKSPACE/eloqdoc_pr/concourse"
 else
     echo "No concourse directory found under \$WORKSPACE" >&2
     exit 1
