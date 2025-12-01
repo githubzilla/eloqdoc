@@ -3,8 +3,20 @@ set -exo pipefail
 
 export PREFIX="/home/eloq/workspace/mongo/install"
 
+# make coredump dir writable.
+if [ ! -d "/var/crash" ]; then sudo mkdir -p /var/crash; fi
+sudo chmod 777 /var/crash
+
+
 ls
 export WORKSPACE=$PWD
+
+cd $WORKSPACE
+whoami
+pwd
+ls
+current_user=$(whoami)
+sudo chown -R $current_user $PWD
 
 source "$(dirname "$0")/common.sh"
 
@@ -15,16 +27,6 @@ echo "$GIT_SSH_KEY" > ~/.ssh/id_rsa
 chmod 600 ~/.ssh/id_rsa
 ssh-keyscan github.com >> ~/.ssh/known_hosts
 
-cd $WORKSPACE
-whoami
-pwd
-ls
-current_user=$(whoami)
-sudo chown -R $current_user $PWD
-
-# make coredump dir writable.
-if [ ! -d "/var/crash" ]; then sudo mkdir -p /var/crash; fi
-sudo chmod 777 /var/crash
 
 cd $WORKSPACE/eloqdoc_pr
 pr_branch_name=$(cat .git/resource/metadata.json | jq -r '.[] | select(.name=="head_name") | .value')
