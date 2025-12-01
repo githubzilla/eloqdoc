@@ -3,6 +3,9 @@ set -exo pipefail
 
 export PREFIX="/home/eloq/workspace/mongo/install"
 
+ls
+export WORKSPACE=$PWD
+
 source "$(dirname "$0")/common.sh"
 
 CWDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -11,9 +14,6 @@ mkdir -p ~/.ssh
 echo "$GIT_SSH_KEY" > ~/.ssh/id_rsa
 chmod 600 ~/.ssh/id_rsa
 ssh-keyscan github.com >> ~/.ssh/known_hosts
-
-ls
-export WORKSPACE=$PWD
 
 cd $WORKSPACE
 whoami
