@@ -69,7 +69,7 @@ cd /home/$current_user/workspace/mongo
 # Generate unique bucket names for pr test
 timestamp=$(($(date +%s%N)/1000000))
 BUCKET_NAME="pr-test-${timestamp}"
-BUCKET_PREFIX="rocksdb-cloud-"
+BUCKET_PREFIX="eloqdoc-"
 echo "bucket_name is ${BUCKET_PREFIX}${BUCKET_NAME}"
 DATA_DIR="/home/eloq/workspace/mongo/install/data"
 
