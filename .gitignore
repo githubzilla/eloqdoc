@@ -163,7 +163,7 @@ src/mongo/embedded/java/aar/build/
 src/mongo/embedded/java/jar/build/
 local.properties
 
-compile_commands.json
+compile_commands*
 
 .cache/
 .root
@@ -186,3 +186,7 @@ install
 data
 pyvenv
 venv
+
+# cursor ide
+.cursor
+thoughts
