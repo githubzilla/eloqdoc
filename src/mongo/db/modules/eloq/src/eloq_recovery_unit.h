@@ -161,6 +161,29 @@ public:
                                const std::string& newSchemaImage,
                                uint64_t version);
 
+    // Prefetch methods
+    size_t enqueuePrefetchRequest(const txservice::TableName& tableName,
+                                  const std::vector<RecordId>& recordIds,
+                                  uint64_t keySchemaVersion);
+
+    void removePrefetchRequestBatch(const txservice::TableName& tableName, size_t batchId);
+
+    void triggerPrefetchIfNeeded(OperationContext* opCtx,
+                                 const txservice::TableName& tableName,
+                                 const RecordId* priorityRecordId);
+
+    bool getPrefetchedDoc(OperationContext* opCtx,
+                          const txservice::TableName& tableName,
+                          const RecordId& id,
+                          uint64_t keySchemaVersion,
+                          Eloq::MongoRecord* out);
+
+    void clearPrefetchCache();
+
+    void setPrefetchCacheMaxSize(size_t maxSize) {
+        _prefetchCacheMaxSize = maxSize;
+    }
+
 private:
     void _abort();
     void _commit();
@@ -192,6 +215,33 @@ private:
     absl::flat_hash_map<txservice::TableName, DiscoveredTable> _discoveredTableMap;
     std::unordered_map<txservice::TableName, BSONObj> _unreadyTableMap;
     // butil::Timer _timer;
+
+    // Prefetch cache for batch document fetching
+    struct PendingPrefetch {
+        std::vector<RecordId> recordIds;  // MongoDB RecordIds extracted from index entries
+        uint64_t keySchemaVersion;        // Schema version for this prefetch batch
+    };
+
+    // Prefetched documents cache
+    absl::flat_hash_map<RecordId, std::unique_ptr<const Eloq::MongoRecord>, RecordId::Hasher>
+        _docPrefetchCache;
+    size_t _prefetchCacheSize{0};                    // Current cache size in bytes
+    size_t _prefetchCacheMaxSize{10 * 1024 * 1024};  // Default 10MB limit
+    std::vector<RecordId> _cacheInsertionOrder;      // Track insertion order for FIFO eviction
+
+    // Map from tableName to single pending prefetch batch for that table
+    absl::flat_hash_map<txservice::TableName, PendingPrefetch, txservice::TableName::Hasher>
+        _pendingPrefetches;
+
+    // Track which RecordIds are already in prefetch queue to avoid duplicates
+    absl::flat_hash_set<RecordId, RecordId::Hasher> _pendingRecordIds;
+
+    // Track which batch ID each RecordId belongs to (for removal when batch expires)
+    absl::flat_hash_map<RecordId, size_t, RecordId::Hasher> _recordIdToBatchId;
+
+    size_t _prefetchBatchCounter{0};  // Used to generate unique batchIds for tracking
+
+    void _evictFIFOEntry();
 };
 
 }  // namespace mongo

@@ -24,6 +24,8 @@
 #include "mongo/db/modules/eloq/data_substrate/tx_service/include/tx_execution.h"
 #include "mongo/db/modules/eloq/data_substrate/tx_service/include/tx_request.h"
 
+#include <functional>
+
 namespace mongo {
 class EloqRecoveryUnit;
 
@@ -47,7 +49,14 @@ public:
 
     txservice::TxErrorCode nextBatchTuple();
     const txservice::ScanBatchTuple* currentBatchTuple() const;
+    const std::vector<txservice::ScanBatchTuple>& getCurrentBatchVector() const {
+        return _scanBatchVector;
+    }
 
+    // Set prefetch callback to be called when new batches are fetched
+    void setPrefetchCallback(std::function<void()> callback) {
+        _prefetchCallback = std::move(callback);
+    }
 
     uint32_t PrefetchSize() {
         if (_endSpecified) {
@@ -83,6 +92,9 @@ private:
     size_t _scanBatchIdx{UINT64_MAX};
     size_t _scanBatchCnt{0};
     bool _endSpecified{false};
+
+    // Prefetch callback to be called when new batches are fetched
+    std::function<void()> _prefetchCallback;
 };
 
 }  // namespace mongo

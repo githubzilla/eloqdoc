@@ -260,6 +260,9 @@ private:
 
         _cursor.emplace(_opCtx);
 
+        // Set up prefetch callback to be called when new batches are fetched
+        _cursor->setPrefetchCallback([this]() { _enqueuePrefetchRequest(); });
+
         txservice::ScanDirection direction =
             _forward ? txservice::ScanDirection::Forward : txservice::ScanDirection::Backward;
 
@@ -296,7 +299,7 @@ private:
 
     void _updatePosition(bool inNext = true) {
         MONGO_LOG(1) << "EloqIndexCursor::_updatePosition " << _indexName->StringView()
-                     << ". inNext" << inNext;
+                     << ". inNext: " << std::to_string(inNext);
         _eof = false;
 
         if (inNext) {
@@ -443,6 +446,58 @@ private:
     Eloq::MongoRecord _idReadRecord;
 
     boost::optional<EloqCursor> _cursor;
+
+    size_t _lastPrefetchBatchId{0};  // Track last batch ID for removal
+
+    void _enqueuePrefetchRequest() {
+        // Only prefetch for STANDARD indexes (not ID or UNIQUE)
+        if (_indexType != IndexCursorType::STANDARD) {
+            return;
+        }
+
+        // Remove previous batch's RecordIds from prefetch queue (if any)
+        if (_lastPrefetchBatchId != 0) {
+            const txservice::TableName& tableName = _idx->getTableName();
+            _ru->removePrefetchRequestBatch(tableName, _lastPrefetchBatchId);
+            _lastPrefetchBatchId = 0;
+        }
+
+        // Get the current batch vector from EloqCursor
+        if (!_cursor) {
+            return;
+        }
+        const auto& batchVector = _cursor->getCurrentBatchVector();
+        if (batchVector.empty()) {
+            return;
+        }
+
+        // Collect RecordIds from the batch
+        std::vector<RecordId> recordIds;
+        recordIds.reserve(batchVector.size());
+        for (const auto& tuple : batchVector) {
+            if (tuple.status_ != txservice::RecordStatus::Normal) {
+                continue;
+            }
+            const Eloq::MongoKey* key = tuple.key_.GetKey<Eloq::MongoKey>();
+            if (key == nullptr) {
+                continue;
+            }
+            KeyString ks(_idx->keyStringVersion());
+            ks.resetFromBuffer(key->Data(), key->Size());
+            RecordId id = KeyString::decodeRecordIdStrAtEnd(ks.getBuffer(), ks.getSize());
+            recordIds.push_back(id);
+        }
+
+        if (recordIds.empty()) {
+            return;
+        }
+
+        const txservice::TableName& tableName = _idx->getTableName();
+        uint64_t schemaVersion = _ru->getIndexSchema(tableName)->SchemaTs();
+        _lastPrefetchBatchId = _ru->enqueuePrefetchRequest(tableName, recordIds, schemaVersion);
+        MONGO_LOG(1) << "Enqueued prefetch batch " << _lastPrefetchBatchId << " with "
+                     << recordIds.size() << " RecordIds (same size as index scan batch)";
+    }
 };
 
 class EloqIndex::BulkBuilder : public SortedDataBuilderInterface {

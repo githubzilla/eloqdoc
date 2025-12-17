@@ -205,6 +205,11 @@ txservice::TxErrorCode EloqCursor::_fetchBatchTuples() {
                      << ", tuples: " << _scanBatchVector.size();
         _isLastScanBatch = scanBatchTxReq.Result();
         ++_scanBatchCnt;
+
+        // Call prefetch callback when new batch is successfully fetched
+        if (!_scanBatchVector.empty() && _prefetchCallback) {
+            _prefetchCallback();
+        }
     }
 
     return scanBatchTxReq.ErrorCode();

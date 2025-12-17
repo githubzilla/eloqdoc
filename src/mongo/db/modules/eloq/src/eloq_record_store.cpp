@@ -481,13 +481,19 @@ public:
         }
 
         Eloq::MongoKey pkey(id);
-        bool isForWrite = _opCtx->isUpsert();
-        auto [exists, err] = _ru->getKV(
-            _opCtx, *_tableName, _keySchema->SchemaTs(), &pkey, &_idReadRecord, isForWrite);
-        uassertStatusOK(TxErrorCodeToMongoStatus(err));
-        if (!exists) {
-            MONGO_LOG(1) << "no found. id: " << id << ". Txservice error code: " << err;
-            return {};
+        bool in_cache = _ru->getPrefetchedDoc(
+            _opCtx, *_tableName, id, _keySchema->SchemaTs(), &_idReadRecord);
+        if (in_cache) {
+            MONGO_LOG(1) << "Fetch document from prefetch cache. id: " << id;
+        } else {
+            bool isForWrite = _opCtx->isUpsert();
+            auto [exists, err] = _ru->getKV(
+                _opCtx, *_tableName, _keySchema->SchemaTs(), &pkey, &_idReadRecord, isForWrite);
+            uassertStatusOK(TxErrorCodeToMongoStatus(err));
+            if (!exists) {
+                MONGO_LOG(1) << "no found. id: " << id << ". Txservice error code: " << err;
+                return {};
+            }
         }
 
         if (_lastMongoKey) {
