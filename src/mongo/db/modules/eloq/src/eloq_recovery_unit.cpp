@@ -1059,24 +1059,23 @@ void EloqRecoveryUnit::triggerPrefetchIfNeeded(OperationContext* opCtx,
         return;  // No pending batches for this table
     }
 
-    // Get the front batchId from the queue (FIFO)
+    // Get the front batchId from the queue (FIFO) - don't remove it yet
     size_t batchId = tableIt->second.front();
-    tableIt->second.erase(tableIt->second.begin());  // Remove from queue
-
-    // If no more batches for this table, remove the table entry
-    if (tableIt->second.empty()) {
-        _pendingPrefetches.erase(tableIt);
-    }
 
     // Get the PendingPrefetch for this batchId
     auto batchIt = _batchIdToPrefetch.find(batchId);
     if (batchIt == _batchIdToPrefetch.end()) {
         MONGO_LOG(1) << "Batch " << batchId << " not found in _batchIdToPrefetch";
+        // Remove invalid batchId from queue
+        tableIt->second.erase(tableIt->second.begin());
+        if (tableIt->second.empty()) {
+            _pendingPrefetches.erase(tableIt);
+        }
         return;
     }
 
-    PendingPrefetch prefetch = std::move(batchIt->second);
-    _batchIdToPrefetch.erase(batchIt);  // Remove from batch map (will be processed now)
+    // Get reference to the pending prefetch (we'll modify it as we process)
+    PendingPrefetch& prefetch = batchIt->second;
 
     // If priorityRecordId is provided and in the batch, move it to the front
     if (priorityRecordId != nullptr) {
@@ -1091,86 +1090,139 @@ void EloqRecoveryUnit::triggerPrefetchIfNeeded(OperationContext* opCtx,
         }
     }
 
-    // Execute batch fetch for this table
     uint64_t schemaVersion = prefetch.keySchemaVersion;
     bool isForWrite = opCtx->isUpsert();
-
-    // Reconstruct batchTuples from recordIds
-    // For STANDARD indexes, RecordId IS the document key
-    std::vector<txservice::ScanBatchTuple> fetchTuples;
-    fetchTuples.reserve(prefetch.recordIds.size());
-    auto docKeys = std::make_unique<Eloq::MongoKey[]>(prefetch.recordIds.size());
-    auto docRecords = std::make_unique<Eloq::MongoRecord[]>(prefetch.recordIds.size());
-
-    // Build fetchTuples
-    for (size_t i = 0; i < prefetch.recordIds.size(); ++i) {
-        // Create MongoKey from RecordId (document key)
-        const RecordId& id = prefetch.recordIds[i];
-        Eloq::MongoKey& docKey = docKeys[i];
-        docKey.SetPackedKey(id);
-        Eloq::MongoRecord& docRecord = docRecords[i];
-
-        // Create ScanBatchTuple with document key (record_ is nullptr, will be filled by
-        // batchGetKV)
-        fetchTuples.emplace_back(txservice::TxKey(&docKey), &docRecord);
-    }
-
-    txservice::TxErrorCode err =
-        batchGetKV(opCtx, tableName, schemaVersion, fetchTuples, isForWrite);
-
-    if (err != txservice::TxErrorCode::NO_ERROR) {
-        MONGO_LOG(1) << "Batch prefetch failed for table " << tableName.StringView() << ": " << err;
-        return;
-    }
+    const size_t SMALL_BATCH_SIZE = 30;  // Process in batches of 100 recordIds at a time
 
     // Get or create the cache map for this table
     auto& tableCache = _docPrefetchCache[tableName];
 
-    // Store prefetched documents in cache
-    size_t prefetchedCount = 0;
-    size_t droppedCount = 0;
+    size_t totalPrefetchedCount = 0;
+    size_t totalDroppedCount = 0;
+    bool cacheFull = false;
 
-    // Process fetch results
-    // fetchTuples[i] corresponds to prefetch.recordIds[i]
-    for (size_t i = 0; i < fetchTuples.size() && i < prefetch.recordIds.size(); ++i) {
-        const auto& tuple = fetchTuples[i];
-        const RecordId& id = prefetch.recordIds[i];
-
-        if (tuple.status_ == txservice::RecordStatus::Normal && tuple.record_ != nullptr) {
-            Eloq::MongoRecord* record = static_cast<Eloq::MongoRecord*>(tuple.record_);
-            size_t recordSize = record->EncodedBlobSize();
-
-            // Check if we have space in cache
-            if (_prefetchCacheSize + recordSize > _prefetchCacheMaxSize) {
-                // Cache can't fit this item - drop it
-                droppedCount++;
-                MONGO_LOG(1) << "Dropping prefetch result for RecordId " << id
-                             << " - cache full (size: " << _prefetchCacheSize
-                             << ", record size: " << recordSize << ")";
-                continue;
-            }
-
-            // Make a copy for caching
-            auto cachedRecord = std::make_unique<Eloq::MongoRecord>(std::move(*record));
-
-            // Create cache item with record and batchId
-            DocPrefetchCacheItem cacheItem;
-            cacheItem.record = std::move(cachedRecord);
-            cacheItem.batchId = batchId;
-
-            // Insert into cache
-            tableCache[id] = std::move(cacheItem);
-            _prefetchCacheSize += recordSize;
-            prefetchedCount++;
-
-            MONGO_LOG(1) << "Cached prefetched document for RecordId " << id << " (batch "
-                         << batchId << "). Cache size: " << _prefetchCacheSize << " bytes";
+    // Process recordIds in small batches
+    while (!prefetch.recordIds.empty() && !cacheFull) {
+        // Check if cache is full before processing next small batch
+        if (_prefetchCacheSize >= _prefetchCacheMaxSize) {
+            MONGO_LOG(1) << "Cache is full (" << _prefetchCacheSize
+                         << " >= " << _prefetchCacheMaxSize << "), stopping prefetch for batch "
+                         << batchId;
+            cacheFull = true;
+            break;
         }
+
+        // Determine how many recordIds to process in this small batch
+        size_t batchSize = std::min<size_t>(SMALL_BATCH_SIZE, prefetch.recordIds.size());
+        std::vector<RecordId> smallBatchIds;
+        smallBatchIds.reserve(batchSize);
+
+        // Take the first batchSize recordIds
+        smallBatchIds.assign(prefetch.recordIds.begin(), prefetch.recordIds.begin() + batchSize);
+
+        // Build fetchTuples for this small batch
+        std::vector<txservice::ScanBatchTuple> fetchTuples;
+        fetchTuples.reserve(smallBatchIds.size());
+        auto docKeys = std::make_unique<Eloq::MongoKey[]>(smallBatchIds.size());
+        auto docRecords = std::make_unique<Eloq::MongoRecord[]>(smallBatchIds.size());
+
+        for (size_t i = 0; i < smallBatchIds.size(); ++i) {
+            // Create MongoKey from RecordId (document key)
+            const RecordId& id = smallBatchIds[i];
+            Eloq::MongoKey& docKey = docKeys[i];
+            docKey.SetPackedKey(id);
+            Eloq::MongoRecord& docRecord = docRecords[i];
+
+            // Create ScanBatchTuple with document key (record_ is nullptr, will be filled by
+            // batchGetKV)
+            fetchTuples.emplace_back(txservice::TxKey(&docKey), &docRecord);
+        }
+
+        // Execute small batch fetch
+        txservice::TxErrorCode err =
+            batchGetKV(opCtx, tableName, schemaVersion, fetchTuples, isForWrite);
+
+        if (err != txservice::TxErrorCode::NO_ERROR) {
+            MONGO_LOG(1) << "Small batch prefetch failed for table " << tableName.StringView()
+                         << " (batch " << batchId << "): " << err;
+            // Remove processed recordIds from pending prefetch even on error
+            prefetch.recordIds.erase(prefetch.recordIds.begin(),
+                                     prefetch.recordIds.begin() + batchSize);
+            break;
+        }
+
+        // Process fetch results and add to cache
+        size_t prefetchedInBatch = 0;
+        size_t droppedInBatch = 0;
+
+        for (size_t i = 0; i < fetchTuples.size() && i < smallBatchIds.size(); ++i) {
+            const auto& tuple = fetchTuples[i];
+            const RecordId& id = smallBatchIds[i];
+
+            if (tuple.status_ == txservice::RecordStatus::Normal && tuple.record_ != nullptr) {
+                Eloq::MongoRecord* record = static_cast<Eloq::MongoRecord*>(tuple.record_);
+                size_t recordSize = record->EncodedBlobSize();
+
+                // Check if we have space in cache
+                if (_prefetchCacheSize + recordSize > _prefetchCacheMaxSize) {
+                    // Cache can't fit this item - drop it
+                    droppedInBatch = smallBatchIds.size() - i;
+                    cacheFull = true;
+                    MONGO_LOG(1) << "Dropping prefetch result for RecordId " << id
+                                 << " - cache full (size: " << _prefetchCacheSize
+                                 << ", record size: " << recordSize << ")";
+                    break;
+                }
+
+                // Make a copy for caching
+                auto cachedRecord = std::make_unique<Eloq::MongoRecord>(std::move(*record));
+
+                // Create cache item with record and batchId
+                DocPrefetchCacheItem cacheItem;
+                cacheItem.record = std::move(cachedRecord);
+                cacheItem.batchId = batchId;
+
+                // Insert into cache
+                tableCache[id] = std::move(cacheItem);
+                _prefetchCacheSize += recordSize;
+                prefetchedInBatch++;
+
+                MONGO_LOG(1) << "Cached prefetched document for RecordId " << id << " (batch "
+                             << batchId << "). Cache size: " << _prefetchCacheSize << " bytes";
+            }
+        }
+
+        // Remove processed recordIds from pending prefetch (remove first batchSize items)
+        // All items in this small batch have been processed (successfully or not)
+        prefetch.recordIds.erase(prefetch.recordIds.begin(),
+                                 prefetch.recordIds.begin() + batchSize);
+
+        totalPrefetchedCount += prefetchedInBatch;
+        totalDroppedCount += droppedInBatch;
+
+        MONGO_LOG(1) << "Processed small batch: " << prefetchedInBatch << " cached, "
+                     << droppedInBatch << " dropped. Remaining in batch " << batchId << ": "
+                     << prefetch.recordIds.size();
     }
 
-    MONGO_LOG(1) << "Prefetched " << prefetchedCount << " documents for table "
-                 << tableName.StringView() << " (batch " << batchId << "). Dropped " << droppedCount
-                 << " documents (cache full). Total cache size: " << _prefetchCacheSize << " bytes";
+    // If all recordIds were processed, remove batchId from queue and _batchIdToPrefetch
+    if (prefetch.recordIds.empty()) {
+        tableIt->second.erase(tableIt->second.begin());  // Remove from queue
+        if (tableIt->second.empty()) {
+            _pendingPrefetches.erase(tableIt);
+        }
+        _batchIdToPrefetch.erase(batchIt);  // Remove from batch map
+        MONGO_LOG(1) << "Completed prefetch for batch " << batchId << " for table "
+                     << tableName.StringView() << ". Total: " << totalPrefetchedCount << " cached, "
+                     << totalDroppedCount << " dropped";
+    } else {
+        // Some recordIds remain - update _batchIdToPrefetch and keep batchId in queue
+        // (batchId is already at front, so no need to re-add)
+        MONGO_LOG(1) << "Partially completed prefetch for batch " << batchId << " for table "
+                     << tableName.StringView() << ". Cached: " << totalPrefetchedCount
+                     << ", dropped: " << totalDroppedCount
+                     << ", remaining: " << prefetch.recordIds.size();
+    }
 }
 
 bool EloqRecoveryUnit::getPrefetchedDoc(OperationContext* opCtx,
