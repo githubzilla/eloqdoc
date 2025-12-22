@@ -974,6 +974,7 @@ size_t EloqRecoveryUnit::enqueuePrefetchRequest(const txservice::TableName& tabl
     }
 
     size_t batchId = ++_prefetchBatchCounter;
+    _totalOngoingBatchPrefetches++;
 
     // Create a new PendingPrefetch for this batch
     PendingPrefetch prefetch;
@@ -1017,14 +1018,26 @@ void EloqRecoveryUnit::removePrefetchRequestBatch(const txservice::TableName& ta
         size_t removedCount = 0;
         size_t removedSize = 0;
 
-        absl::erase_if(recordMap, [batchId, &removedCount, &removedSize](const auto& pair) {
-            if (pair.second.batchId == batchId) {
+        if (_totalOngoingBatchPrefetches == 1) {
+            // If this is the last ongoing batch, clear all cache for this table
+            MONGO_LOG(1) << "Last ongoing batch, clearing all cached documents for table "
+                         << tableName.StringView();
+            for (const auto& pair : recordMap) {
                 removedSize += pair.second.record->EncodedBlobSize();
                 removedCount++;
-                return true;  // Remove this entry
             }
-            return false;  // Keep this entry
-        });
+            recordMap.clear();
+        } else {
+            absl::erase_if(recordMap, [batchId, &removedCount, &removedSize](const auto& pair) {
+                if (pair.second.batchId == batchId) {
+                    removedSize += pair.second.record->EncodedBlobSize();
+                    removedCount++;
+                    return true;  // Remove this entry
+                }
+                return false;  // Keep this entry
+            });
+        }
+        _totalOngoingBatchPrefetches--;
 
         _prefetchCacheSize -= removedSize;
 

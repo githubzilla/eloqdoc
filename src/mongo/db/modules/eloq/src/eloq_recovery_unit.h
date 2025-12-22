@@ -243,7 +243,8 @@ private:
     // Map from batchId to PendingPrefetch (stores RecordIds and schema version for each batch)
     absl::flat_hash_map<size_t, PendingPrefetch> _batchIdToPrefetch;
 
-    size_t _prefetchBatchCounter{0};  // Used to generate unique batchIds for tracking
+    size_t _totalOngoingBatchPrefetches{0};  // track ongoing prefetches batches
+    size_t _prefetchBatchCounter{0};         // Used to generate unique batchIds for tracking
 };
 
 }  // namespace mongo
