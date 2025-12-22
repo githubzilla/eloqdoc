@@ -1092,7 +1092,10 @@ void EloqRecoveryUnit::triggerPrefetchIfNeeded(OperationContext* opCtx,
 
     uint64_t schemaVersion = prefetch.keySchemaVersion;
     bool isForWrite = opCtx->isUpsert();
-    const size_t SMALL_BATCH_SIZE = 30;  // Process in batches of 100 recordIds at a time
+    size_t SMALL_BATCH_SIZE =
+        prefetch.recordIds.size() / 3;  // Process in batches of 1/3 recordIds at a time
+    SMALL_BATCH_SIZE = std::max<size_t>(SMALL_BATCH_SIZE, 30);  // Minimum batch size of 30
+    SMALL_BATCH_SIZE = std::min<size_t>(SMALL_BATCH_SIZE, prefetch.recordIds.size());
 
     // Get or create the cache map for this table
     auto& tableCache = _docPrefetchCache[tableName];
