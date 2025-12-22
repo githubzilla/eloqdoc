@@ -187,8 +187,8 @@ data
 pyvenv
 venv
 
-.cursor
-thoughts
+/.cursor
+/thoughts
 
-db
-logs
+/db
+/logs
