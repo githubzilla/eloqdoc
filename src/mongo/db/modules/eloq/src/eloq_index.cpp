@@ -458,6 +458,8 @@ private:
         // Remove previous batch's RecordIds from prefetch queue (if any)
         if (_lastPrefetchBatchId != 0) {
             const txservice::TableName& tableName = _idx->getTableName();
+            MONGO_LOG(1) << "Removing previous prefetch batch " << _lastPrefetchBatchId
+                         << " for table " << tableName.StringView();
             _ru->removePrefetchRequestBatch(tableName, _lastPrefetchBatchId);
             _lastPrefetchBatchId = 0;
         }

@@ -222,26 +222,28 @@ private:
         uint64_t keySchemaVersion;        // Schema version for this prefetch batch
     };
 
-    // Prefetched documents cache
-    absl::flat_hash_map<RecordId, std::unique_ptr<const Eloq::MongoRecord>, RecordId::Hasher>
-        _docPrefetchCache;
-    size_t _prefetchCacheSize{0};                    // Current cache size in bytes
-    size_t _prefetchCacheMaxSize{10 * 1024 * 1024};  // Default 10MB limit
-    std::vector<RecordId> _cacheInsertionOrder;      // Track insertion order for FIFO eviction
+    // Cache item that stores both the record and its batchId
+    struct DocPrefetchCacheItem {
+        std::unique_ptr<const Eloq::MongoRecord> record;
+        size_t batchId;
+    };
 
-    // Map from tableName to single pending prefetch batch for that table
-    absl::flat_hash_map<txservice::TableName, PendingPrefetch, txservice::TableName::Hasher>
+    // Prefetched documents cache: two-level map TableName -> RecordId -> CacheItem
+    absl::flat_hash_map<txservice::TableName,
+                        absl::flat_hash_map<RecordId, DocPrefetchCacheItem, RecordId::Hasher>,
+                        txservice::TableName::Hasher>
+        _docPrefetchCache;
+    size_t _prefetchCacheSize{0};             // Current cache size in bytes
+    size_t _prefetchCacheMaxSize{10 * 1024};  // Default 10MB limit
+
+    // Map from tableName to vector of batchIds (FIFO queue of batches to prefetch)
+    absl::flat_hash_map<txservice::TableName, std::vector<size_t>, txservice::TableName::Hasher>
         _pendingPrefetches;
 
-    // Track which RecordIds are already in prefetch queue to avoid duplicates
-    absl::flat_hash_set<RecordId, RecordId::Hasher> _pendingRecordIds;
-
-    // Track which batch ID each RecordId belongs to (for removal when batch expires)
-    absl::flat_hash_map<RecordId, size_t, RecordId::Hasher> _recordIdToBatchId;
+    // Map from batchId to PendingPrefetch (stores RecordIds and schema version for each batch)
+    absl::flat_hash_map<size_t, PendingPrefetch> _batchIdToPrefetch;
 
     size_t _prefetchBatchCounter{0};  // Used to generate unique batchIds for tracking
-
-    void _evictFIFOEntry();
 };
 
 }  // namespace mongo
