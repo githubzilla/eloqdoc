@@ -408,13 +408,27 @@ private:
             if (tuple.status_ != txservice::RecordStatus::Normal) {
                 continue;  // Keep hole at this position
             }
-            const Eloq::MongoKey* key = tuple.key_.GetKey<Eloq::MongoKey>();
-            if (key == nullptr) {
-                continue;  // Keep hole at this position
+
+            RecordId id;
+            if (_indexType == IndexCursorType::UNIQUE) {
+                // For UNIQUE indexes, RecordId is stored in the record data, not in the key
+                const Eloq::MongoRecord* record =
+                    static_cast<const Eloq::MongoRecord*>(tuple.record_);
+                if (record == nullptr) {
+                    continue;  // Keep hole at this position
+                }
+                id = record->ToRecordId(false);
+            } else {
+                // For STANDARD indexes, RecordId is appended to the key
+                const Eloq::MongoKey* key = tuple.key_.GetKey<Eloq::MongoKey>();
+                if (key == nullptr) {
+                    continue;  // Keep hole at this position
+                }
+                KeyString ks(_idx->keyStringVersion());
+                ks.resetFromBuffer(key->Data(), key->Size());
+                id = KeyString::decodeRecordIdStrAtEnd(ks.getBuffer(), ks.getSize());
             }
-            KeyString ks(_idx->keyStringVersion());
-            ks.resetFromBuffer(key->Data(), key->Size());
-            RecordId id = KeyString::decodeRecordIdStrAtEnd(ks.getBuffer(), ks.getSize());
+
             recordIds.push_back(id);
             validIndices.push_back(i);  // Track the batchVector index for this valid entry
         }
