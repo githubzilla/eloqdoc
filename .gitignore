@@ -186,5 +186,5 @@ install
 data
 pyvenv
 venv
-.cursor
-thoughts
+/.cursor
+/thoughts
