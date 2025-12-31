@@ -317,8 +317,13 @@ private:
                 _scanTupleRecord = static_cast<const Eloq::MongoRecord*>(scanTuple->record_);
 
                 // Ensure records are fetched for current position (lazy fetch)
-                // _ensureRecordsFetched() uses _cursor->getScanBatchIdx() to get current position
-                _ensureRecordsFetched();
+                // Only call for STANDARD and UNIQUE indexes - ID indexes already have records in
+                // scan result _ensureRecordsFetched() uses _cursor->getScanBatchIdx() to get
+                // current position
+                if (_indexType == IndexCursorType::STANDARD ||
+                    _indexType == IndexCursorType::UNIQUE) {
+                    _ensureRecordsFetched();
+                }
             }
         }
 
