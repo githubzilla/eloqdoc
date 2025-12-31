@@ -48,6 +48,13 @@ public:
     txservice::TxErrorCode nextBatchTuple();
     const txservice::ScanBatchTuple* currentBatchTuple() const;
 
+    size_t getScanBatchIdx() const {
+        return _scanBatchIdx;
+    }
+
+    const std::vector<txservice::ScanBatchTuple>& getCurrentBatchVector() const {
+        return _scanBatchVector;
+    }
 
     uint32_t PrefetchSize() {
         if (_endSpecified) {

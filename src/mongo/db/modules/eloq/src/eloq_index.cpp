@@ -24,6 +24,7 @@
 
 #include "mongo/base/object_pool.h"
 #include "mongo/db/index/index_descriptor.h"
+#include "mongo/db/query/query_knobs.h"
 #include "mongo/util/log.h"
 
 #include "mongo/db/modules/eloq/src/base/eloq_key.h"
@@ -105,6 +106,9 @@ public:
         _endKey = Eloq::MongoKey::GetNegInfTxKey();
 
         _recordPtr = nullptr;
+
+        // Clear prefetched records
+        _clearPrefetchedRecords();
     }
 
     void setEndPosition(const BSONObj& key, bool inclusive) override {
@@ -311,6 +315,10 @@ private:
             if (scanTuple != nullptr) {
                 _scanTupleKey = scanTuple->key_.GetKey<Eloq::MongoKey>();
                 _scanTupleRecord = static_cast<const Eloq::MongoRecord*>(scanTuple->record_);
+
+                // Ensure records are fetched for current position (lazy fetch)
+                // _ensureRecordsFetched() uses _cursor->getScanBatchIdx() to get current position
+                _ensureRecordsFetched();
             }
         }
 
@@ -329,6 +337,184 @@ private:
         _updateIdAndTypeBits();
     }
 
+    void _ensureRecordsFetched() {
+        // Only fetch for STANDARD and UNIQUE indexes (not ID)
+        // ID indexes already have records in scan result
+        if (_indexType != IndexCursorType::STANDARD && _indexType != IndexCursorType::UNIQUE) {
+            return;
+        }
+
+        if (!_cursor) {
+            return;
+        }
+
+        const auto& batchVector = _cursor->getCurrentBatchVector();
+        if (batchVector.empty()) {
+            return;
+        }
+
+        // Detect if a new batch has been fetched (batch vector size changed)
+        if (batchVector.size() != _lastBatchVectorSize) {
+            // New batch arrived, clear old prefetched records
+            _prefetchedRecords.clear();
+            _prefetchedBatchStartIdx = 0;
+            _lastBatchVectorSize = batchVector.size();
+        }
+
+        // Get current scan batch index directly from EloqCursor (no need to search)
+        size_t scanBatchIdx = _cursor->getScanBatchIdx();
+
+        // Check if current scan index is within prefetched range
+        size_t prefetchedEndIdx = _prefetchedBatchStartIdx + _prefetchedRecords.size();
+        if (scanBatchIdx >= _prefetchedBatchStartIdx && scanBatchIdx < prefetchedEndIdx) {
+            // Records already fetched for current position
+            return;
+        }
+
+        // Need to fetch records starting from current scan index
+        _fetchRecordsForRange(scanBatchIdx, batchVector);
+    }
+
+    void _fetchRecordsForRange(size_t startIdx,
+                               const std::vector<txservice::ScanBatchTuple>& batchVector) {
+        if (startIdx >= batchVector.size()) {
+            return;
+        }
+
+        // Get batch size from configuration (smaller than full scan batch)
+        size_t batchSize = _getBatchFetchSize();
+        size_t endIdx = std::min(startIdx + batchSize, batchVector.size());
+
+        // Extract RecordIds from _scanBatchVector (via getCurrentBatchVector) BEFORE batchGetKV
+        // The RecordId should be extracted from _scanBatchVector before calling batchGetKV
+        // This ensures we have the RecordIds ready before making the batchGetKV call
+        // Note: _idx is a member variable of EloqIndexCursor (const EloqIndex* _idx, line 421)
+        // We only collect valid entries for batchGetKV, but maintain holes in _prefetchedRecords
+        // for invalid entries (non-normal status or null key)
+        std::vector<RecordId> recordIds;
+        std::vector<size_t> validIndices;  // Track which indices in batchVector are valid
+        recordIds.reserve(endIdx - startIdx);
+        validIndices.reserve(endIdx - startIdx);
+
+        for (size_t i = startIdx; i < endIdx; ++i) {
+            const auto& tuple = batchVector[i];
+            // Skip invalid entries - they will remain as nullptr holes in _prefetchedRecords
+            if (tuple.status_ != txservice::RecordStatus::Normal) {
+                continue;  // Keep hole at this position
+            }
+            const Eloq::MongoKey* key = tuple.key_.GetKey<Eloq::MongoKey>();
+            if (key == nullptr) {
+                continue;  // Keep hole at this position
+            }
+            KeyString ks(_idx->keyStringVersion());
+            ks.resetFromBuffer(key->Data(), key->Size());
+            RecordId id = KeyString::decodeRecordIdStrAtEnd(ks.getBuffer(), ks.getSize());
+            recordIds.push_back(id);
+            validIndices.push_back(i);  // Track the batchVector index for this valid entry
+        }
+
+        if (recordIds.empty()) {
+            return;
+        }
+
+        // Update logging with actual RecordIds count
+        MONGO_LOG(1) << "Starting batch fetch for range [" << startIdx << "-" << endIdx << "), "
+                     << recordIds.size() << " RecordIds, batch size: " << batchSize
+                     << ", index: " << _indexName->StringView();
+
+        // Build fetchTuples for batchGetKV
+        std::vector<txservice::ScanBatchTuple> fetchTuples;
+        fetchTuples.reserve(recordIds.size());
+        auto docKeys = std::make_unique<Eloq::MongoKey[]>(recordIds.size());
+        auto docRecords = std::make_unique<Eloq::MongoRecord[]>(recordIds.size());
+
+        for (size_t i = 0; i < recordIds.size(); ++i) {
+            Eloq::MongoKey& docKey = docKeys[i];
+            docKey.SetPackedKey(recordIds[i]);
+            Eloq::MongoRecord& docRecord = docRecords[i];
+            fetchTuples.emplace_back(txservice::TxKey(&docKey), &docRecord);
+        }
+
+        // Execute batch fetch
+        const txservice::TableName& tableName = _idx->getTableName();
+        uint64_t schemaVersion = _ru->getIndexSchema(tableName)->SchemaTs();
+        bool isForWrite = _opCtx->isUpsert();
+
+        txservice::TxErrorCode err =
+            _ru->batchGetKV(_opCtx, tableName, schemaVersion, fetchTuples, isForWrite);
+
+        if (err != txservice::TxErrorCode::NO_ERROR) {
+            MONGO_LOG(1) << "Batch fetch failed for table " << tableName.StringView() << ", range ["
+                         << startIdx << "-" << endIdx << "), error: " << err;
+            // Clear prefetched records on error and return error
+            _prefetchedRecords.clear();
+            _prefetchedBatchStartIdx = 0;
+            uassertStatusOK(TxErrorCodeToMongoStatus(err));
+            return;
+        }
+
+        // Clear previous records and store new ones
+        _prefetchedRecords.clear();
+        _prefetchedBatchStartIdx = startIdx;
+        _lastBatchVectorSize = batchVector.size();  // Update batch size tracking
+
+        // Store successfully fetched records, maintaining index alignment
+        // Reserve capacity first to avoid reallocations during resize
+        size_t neededSize = endIdx - startIdx;
+        _prefetchedRecords.reserve(neededSize);
+        // Create a vector that aligns with batchVector indices
+        // Resize without value parameter - unique_ptr elements will default-construct to nullptr
+        _prefetchedRecords.resize(neededSize);
+
+        // Verify and store records in a single iteration
+        // When record cannot be found with batchGetKV, error should be returned
+        size_t fetchedCount = 0;
+        for (size_t i = 0; i < fetchTuples.size(); ++i) {
+            const auto& tuple = fetchTuples[i];
+            size_t batchVectorIdx = validIndices[i];
+
+            // Verify record is valid - fail if not
+            if (tuple.status_ != txservice::RecordStatus::Normal || tuple.record_ == nullptr) {
+                MONGO_LOG(1) << "Record at batch index " << batchVectorIdx
+                             << " not found or has non-normal status: "
+                             << static_cast<int>(tuple.status_);
+                // Return error if record cannot be found
+                uassertStatusOK(Status(ErrorCodes::InternalError,
+                                       "Failed to fetch record at batch index " +
+                                           std::to_string(batchVectorIdx)));
+            }
+
+            // Store the verified record
+            Eloq::MongoRecord* record = static_cast<Eloq::MongoRecord*>(tuple.record_);
+            // Make a copy and store at the correct offset
+            auto recordCopy = std::make_unique<Eloq::MongoRecord>(*record);
+            size_t offset = batchVectorIdx - startIdx;
+            if (offset < _prefetchedRecords.size()) {
+                _prefetchedRecords[offset] = std::move(recordCopy);
+                fetchedCount++;
+            } else {
+                // This should never happen if logic is correct, but fail if it does
+                MONGO_LOG(0) << "Offset " << offset
+                             << " out of range for prefetched records vector";
+                uassertStatusOK(Status(ErrorCodes::InternalError,
+                                       "Offset " + std::to_string(offset) +
+                                           " out of range for prefetched records"));
+            }
+        }
+
+        // Add validation to ensure index alignment
+        if (_prefetchedBatchStartIdx + _prefetchedRecords.size() > endIdx) {
+            MONGO_LOG(0) << "Inconsistent prefetch state: prefetched range extends beyond endIdx. "
+                         << "Start: " << _prefetchedBatchStartIdx
+                         << ", Size: " << _prefetchedRecords.size() << ", EndIdx: " << endIdx;
+            // This shouldn't happen, but handle gracefully
+            _prefetchedRecords.resize(endIdx - _prefetchedBatchStartIdx);
+        }
+
+        MONGO_LOG(1) << "Fetched " << fetchedCount << " records in range [" << startIdx << "-"
+                     << endIdx << ")";
+    }
+
     void _updateIdAndTypeBits() {
         MONGO_LOG(1) << "EloqIndexCursor::_updateIdAndTypeBits " << _indexName->StringView();
 
@@ -345,14 +531,62 @@ private:
                 BufReader br{_scanTupleRecord->UnpackInfoData(),
                              static_cast<unsigned int>(_scanTupleRecord->UnpackInfoSize())};
                 _typeBits.resetFromBuffer(&br);
-                _recordPtr = nullptr;
+
+                // Look up prefetched record by index
+                // Get current scan batch index directly from EloqCursor (no need to search)
+                // The corresponding index of record vector is scanBatchIdx -
+                // _prefetchedBatchStartIdx
+                size_t scanBatchIdx = _cursor->getScanBatchIdx();
+
+                if (scanBatchIdx >= _prefetchedBatchStartIdx) {
+                    size_t offset = scanBatchIdx - _prefetchedBatchStartIdx;
+                    if (offset < _prefetchedRecords.size() &&
+                        _prefetchedRecords[offset] != nullptr) {
+                        _recordPtr = _prefetchedRecords[offset].get();  // Use prefetched record
+                    } else {
+                        _recordPtr = nullptr;  // Record not fetched (error case or out of range)
+                        MONGO_LOG(1) << "RecordId " << _id.toString()
+                                     << " not found in prefetched records at offset " << offset
+                                     << " (scan index " << scanBatchIdx << ") for index "
+                                     << _indexName->StringView();
+                    }
+                } else {
+                    _recordPtr = nullptr;  // Current index before prefetched range
+                    MONGO_LOG(1) << "Current scan index " << scanBatchIdx
+                                 << " is before prefetched range starting at "
+                                 << _prefetchedBatchStartIdx;
+                }
             } break;
             case IndexCursorType::STANDARD: {
                 _id = KeyString::decodeRecordIdStrAtEnd(_key.getBuffer(), _key.getSize());
                 BufReader br{_scanTupleRecord->UnpackInfoData(),
                              static_cast<unsigned int>(_scanTupleRecord->UnpackInfoSize())};
                 _typeBits.resetFromBuffer(&br);
-                _recordPtr = nullptr;
+
+                // Look up prefetched record by index
+                // Get current scan batch index directly from EloqCursor (no need to search)
+                // The corresponding index of record vector is scanBatchIdx -
+                // _prefetchedBatchStartIdx
+                size_t scanBatchIdx = _cursor->getScanBatchIdx();
+
+                if (scanBatchIdx >= _prefetchedBatchStartIdx) {
+                    size_t offset = scanBatchIdx - _prefetchedBatchStartIdx;
+                    if (offset < _prefetchedRecords.size() &&
+                        _prefetchedRecords[offset] != nullptr) {
+                        _recordPtr = _prefetchedRecords[offset].get();  // Use prefetched record
+                    } else {
+                        _recordPtr = nullptr;  // Record not fetched (error case or out of range)
+                        MONGO_LOG(1) << "RecordId " << _id.toString()
+                                     << " not found in prefetched records at offset " << offset
+                                     << " (scan index " << scanBatchIdx << ") for index "
+                                     << _indexName->StringView();
+                    }
+                } else {
+                    _recordPtr = nullptr;  // Current index before prefetched range
+                    MONGO_LOG(1) << "Current scan index " << scanBatchIdx
+                                 << " is before prefetched range starting at "
+                                 << _prefetchedBatchStartIdx;
+                }
                 break;
             }
             default:
@@ -444,6 +678,24 @@ private:
     Eloq::MongoRecord _idReadRecord;
 
     boost::optional<EloqCursor> _cursor;
+
+    // Storage for prefetched records
+    std::vector<std::unique_ptr<Eloq::MongoRecord>> _prefetchedRecords;
+    size_t _prefetchedBatchStartIdx{
+        0};                          // Starting index in scan batch for current prefetched records
+    size_t _lastBatchVectorSize{0};  // Track batch vector size to detect new batches
+
+    void _clearPrefetchedRecords() {
+        _prefetchedRecords.clear();
+        _prefetchedBatchStartIdx = 0;
+        _lastBatchVectorSize = 0;
+    }
+
+    size_t _getBatchFetchSize() const {
+        int batchSize = internalEloqIndexBatchFetchSize.load();
+        // Ensure reasonable bounds: 1 to 1000
+        return std::max(1, std::min(batchSize, 1000));
+    }
 };
 
 class EloqIndex::BulkBuilder : public SortedDataBuilderInterface {
