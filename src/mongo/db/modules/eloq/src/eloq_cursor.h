@@ -56,6 +56,10 @@ public:
         return _scanBatchVector;
     }
 
+    size_t getScanBatchCnt() const {
+        return _scanBatchCnt;
+    }
+
     uint32_t PrefetchSize() {
         if (_endSpecified) {
             // Prefetch more aggressively for end-specified scan as

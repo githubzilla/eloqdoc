@@ -358,12 +358,13 @@ private:
             return;
         }
 
-        // Detect if a new batch has been fetched (batch vector size changed)
-        if (batchVector.size() != _lastBatchVectorSize) {
+        // Detect if a new batch has been fetched using batch count (more reliable than size)
+        size_t currentBatchCnt = _cursor->getScanBatchCnt();
+        if (currentBatchCnt != _lastRecordsBatchCnt) {
             // New batch arrived, clear old prefetched records
             _prefetchedRecords.clear();
             _prefetchedBatchStartIdx = 0;
-            _lastBatchVectorSize = batchVector.size();
+            _lastRecordsBatchCnt = currentBatchCnt;
         }
 
         // Get current scan batch index directly from EloqCursor (no need to search)
@@ -461,7 +462,8 @@ private:
         // Clear previous records and store new ones
         _prefetchedRecords.clear();
         _prefetchedBatchStartIdx = startIdx;
-        _lastBatchVectorSize = batchVector.size();  // Update batch size tracking
+        // Note: _lastRecordsBatchCnt is already updated in _ensureRecordsFetched() before calling
+        // this method
 
         // Store successfully fetched records, maintaining index alignment
         // Reserve capacity first to avoid reallocations during resize
@@ -688,12 +690,12 @@ private:
     std::vector<std::unique_ptr<Eloq::MongoRecord>> _prefetchedRecords;
     size_t _prefetchedBatchStartIdx{
         0};                          // Starting index in scan batch for current prefetched records
-    size_t _lastBatchVectorSize{0};  // Track batch vector size to detect new batches
+    size_t _lastRecordsBatchCnt{0};  // Track batch count to detect new batches
 
     void _clearPrefetchedRecords() {
         _prefetchedRecords.clear();
         _prefetchedBatchStartIdx = 0;
-        _lastBatchVectorSize = 0;
+        _lastRecordsBatchCnt = 0;
     }
 
     size_t _getBatchFetchSize() const {
