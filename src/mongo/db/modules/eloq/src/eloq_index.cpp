@@ -346,20 +346,10 @@ private:
     }
 
     void _ensureRecordsFetched() {
-        // Only fetch for STANDARD and UNIQUE indexes (not ID)
-        // ID indexes already have records in scan result
-        if (_indexType != IndexCursorType::STANDARD && _indexType != IndexCursorType::UNIQUE) {
-            return;
-        }
-
-        if (!_cursor) {
-            return;
-        }
+        assert(_cursor);
 
         const auto& batchVector = _cursor->getCurrentBatchVector();
-        if (batchVector.empty()) {
-            return;
-        }
+        assert(!batchVector.empty());
 
         // Detect if a new batch has been fetched using batch count (more reliable than size)
         size_t currentBatchCnt = _cursor->getScanBatchCnt();
@@ -437,9 +427,7 @@ private:
             validIndices.push_back(i);  // Track the batchVector index for this valid entry
         }
 
-        if (recordIds.empty()) {
-            return;
-        }
+        assert(!recordIds.empty());
 
         // Update logging with actual RecordIds count
         MONGO_LOG(1) << "Starting batch fetch for range [" << startIdx << "-" << endIdx << "), "
@@ -527,14 +515,7 @@ private:
             }
         }
 
-        // Add validation to ensure index alignment
-        if (_prefetchedBatchStartIdx + _prefetchedRecords.size() > endIdx) {
-            MONGO_LOG(0) << "Inconsistent prefetch state: prefetched range extends beyond endIdx. "
-                         << "Start: " << _prefetchedBatchStartIdx
-                         << ", Size: " << _prefetchedRecords.size() << ", EndIdx: " << endIdx;
-            // This shouldn't happen, but handle gracefully
-            _prefetchedRecords.resize(endIdx - _prefetchedBatchStartIdx);
-        }
+        assert(_prefetchedBatchStartIdx + _prefetchedRecords.size() <= endIdx);
 
         MONGO_LOG(1) << "Fetched " << fetchedCount << " records in range [" << startIdx << "-"
                      << endIdx << ")";
