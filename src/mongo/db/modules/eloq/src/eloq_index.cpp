@@ -421,17 +421,31 @@ private:
                      << recordIds.size() << " RecordIds, batch size: " << batchSize
                      << ", index: " << _indexName->StringView();
 
-        // Build fetchTuples for batchGetKV
+        // Prepare _prefetchedRecords before batchGetKV so we can use them directly
+        // Clear previous records and prepare for new ones
+        _prefetchedRecords.clear();
+        _prefetchedBatchStartIdx = startIdx;
+        // Note: _lastRecordsBatchCnt is already updated in _ensureRecordsFetched() before calling
+        // this method
+
+        // Reserve capacity and create records for batchGetKV
+        size_t neededSize = endIdx - startIdx;
+        _prefetchedRecords.reserve(neededSize);
+        _prefetchedRecords.resize(neededSize);
+        for (size_t i = 0; i < neededSize; ++i) {
+            _prefetchedRecords[i] = std::make_unique<Eloq::MongoRecord>();
+        }
+
+        // Build fetchTuples for batchGetKV using _prefetchedRecords directly
         std::vector<txservice::ScanBatchTuple> fetchTuples;
         fetchTuples.reserve(recordIds.size());
         auto docKeys = std::make_unique<Eloq::MongoKey[]>(recordIds.size());
-        auto docRecords = std::make_unique<Eloq::MongoRecord[]>(recordIds.size());
 
         for (size_t i = 0; i < recordIds.size(); ++i) {
             Eloq::MongoKey& docKey = docKeys[i];
             docKey.SetPackedKey(recordIds[i]);
-            Eloq::MongoRecord& docRecord = docRecords[i];
-            fetchTuples.emplace_back(txservice::TxKey(&docKey), &docRecord);
+            // Use _prefetchedRecords directly instead of creating a separate docRecords array
+            fetchTuples.emplace_back(txservice::TxKey(&docKey), _prefetchedRecords[i].get());
         }
 
         // Execute batch fetch
@@ -452,19 +466,7 @@ private:
             return;
         }
 
-        // Clear previous records and store new ones
-        _prefetchedRecords.clear();
-        _prefetchedBatchStartIdx = startIdx;
-        // Note: _lastRecordsBatchCnt is already updated in _ensureRecordsFetched() before calling
-        // this method
-
-        // Store successfully fetched records, maintaining index alignment
-        // Reserve capacity first to avoid reallocations during resize
-        size_t neededSize = endIdx - startIdx;
-        _prefetchedRecords.reserve(neededSize);
-        _prefetchedRecords.resize(neededSize);
-
-        // Verify and store records in a single iteration
+        // Verify records in a single iteration
         // When record cannot be found with batchGetKV, error should be returned
         // All records should be Normal and non-null since they appear in index scan results
         size_t fetchedCount = 0;
@@ -483,11 +485,7 @@ private:
                                            std::to_string(batchVectorIdx)));
             }
 
-            // Store the verified record
-            Eloq::MongoRecord* record = static_cast<Eloq::MongoRecord*>(tuple.record_);
-            // Make a copy and store at the correct offset
-            auto recordCopy = std::make_unique<Eloq::MongoRecord>(*record);
-            _prefetchedRecords[i] = std::move(recordCopy);
+            // Records are already in _prefetchedRecords, no copy needed
             fetchedCount++;
         }
 
