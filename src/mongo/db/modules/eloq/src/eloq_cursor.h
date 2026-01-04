@@ -48,8 +48,10 @@ public:
     txservice::TxErrorCode nextBatchTuple();
     const txservice::ScanBatchTuple* currentBatchTuple() const;
 
-    size_t getScanBatchIdx() const {
-        return _scanBatchIdx;
+    // Return the index of the current batch tuple in the batch vector.
+    size_t getCurrentBatchTupleIdx() const {
+        assert(_scanBatchIdx != UINT64_MAX && _scanBatchIdx > 0);
+        return _scanBatchIdx - 1;
     }
 
     const std::vector<txservice::ScanBatchTuple>& getCurrentBatchVector() const {

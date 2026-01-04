@@ -367,18 +367,18 @@ private:
             _lastRecordsBatchCnt = currentBatchCnt;
         }
 
-        // Get current scan batch index directly from EloqCursor (no need to search)
-        size_t scanBatchIdx = _cursor->getScanBatchIdx();
+        // Current index of the tuple in the index scan batch
+        size_t indexScanBatchIdx = _cursor->getCurrentBatchTupleIdx();
 
         // Check if current scan index is within prefetched range
         size_t prefetchedEndIdx = _prefetchedBatchStartIdx + _prefetchedRecords.size();
-        if (scanBatchIdx >= _prefetchedBatchStartIdx && scanBatchIdx < prefetchedEndIdx) {
+        if (indexScanBatchIdx >= _prefetchedBatchStartIdx && indexScanBatchIdx < prefetchedEndIdx) {
             // Records already fetched for current position
             return;
         }
 
         // Need to fetch records starting from current scan index
-        _fetchRecordsForRange(scanBatchIdx, batchVector);
+        _fetchRecordsForRange(indexScanBatchIdx, batchVector);
     }
 
     void _fetchRecordsForRange(size_t startIdx,
@@ -557,7 +557,7 @@ private:
                 // Get current scan batch index directly from EloqCursor (no need to search)
                 // The corresponding index of record vector is scanBatchIdx -
                 // _prefetchedBatchStartIdx
-                size_t scanBatchIdx = _cursor->getScanBatchIdx();
+                size_t scanBatchIdx = _cursor->getCurrentBatchTupleIdx();
 
                 if (scanBatchIdx >= _prefetchedBatchStartIdx) {
                     size_t offset = scanBatchIdx - _prefetchedBatchStartIdx;
@@ -588,7 +588,7 @@ private:
                 // Get current scan batch index directly from EloqCursor (no need to search)
                 // The corresponding index of record vector is scanBatchIdx -
                 // _prefetchedBatchStartIdx
-                size_t scanBatchIdx = _cursor->getScanBatchIdx();
+                size_t scanBatchIdx = _cursor->getCurrentBatchTupleIdx();
 
                 if (scanBatchIdx >= _prefetchedBatchStartIdx) {
                     size_t offset = scanBatchIdx - _prefetchedBatchStartIdx;
