@@ -377,9 +377,7 @@ private:
 
     void _fetchRecordsForRange(size_t startIdx,
                                const std::vector<txservice::ScanBatchTuple>& batchVector) {
-        if (startIdx >= batchVector.size()) {
-            return;
-        }
+        assert(startIdx < batchVector.size());
 
         // Get batch size from configuration (smaller than full scan batch)
         size_t batchSize = _getBatchFetchSize();
