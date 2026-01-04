@@ -387,42 +387,31 @@ private:
         // The RecordId should be extracted from _scanBatchVector before calling batchGetKV
         // This ensures we have the RecordIds ready before making the batchGetKV call
         // Note: _idx is a member variable of EloqIndexCursor (const EloqIndex* _idx, line 421)
-        // We only collect valid entries for batchGetKV, but maintain holes in _prefetchedRecords
-        // for invalid entries (non-normal status or null key)
+        // If a record ID appears in the index scan result, it should always be Normal and non-null
         std::vector<RecordId> recordIds;
-        std::vector<size_t> validIndices;  // Track which indices in batchVector are valid
         recordIds.reserve(endIdx - startIdx);
-        validIndices.reserve(endIdx - startIdx);
 
         for (size_t i = startIdx; i < endIdx; ++i) {
             const auto& tuple = batchVector[i];
-            // Skip invalid entries - they will remain as nullptr holes in _prefetchedRecords
-            if (tuple.status_ != txservice::RecordStatus::Normal) {
-                continue;  // Keep hole at this position
-            }
-
+            // All entries in index scan results should be Normal and non-null
+            assert(tuple.status_ == txservice::RecordStatus::Normal);
             RecordId id;
             if (_indexType == IndexCursorType::UNIQUE) {
                 // For UNIQUE indexes, RecordId is stored in the record data, not in the key
                 const Eloq::MongoRecord* record =
                     static_cast<const Eloq::MongoRecord*>(tuple.record_);
-                if (record == nullptr) {
-                    continue;  // Keep hole at this position
-                }
+                assert(record != nullptr);
                 id = record->ToRecordId(false);
             } else {
                 // For STANDARD indexes, RecordId is appended to the key
                 const Eloq::MongoKey* key = tuple.key_.GetKey<Eloq::MongoKey>();
-                if (key == nullptr) {
-                    continue;  // Keep hole at this position
-                }
+                assert(key != nullptr);
                 KeyString ks(_idx->keyStringVersion());
                 ks.resetFromBuffer(key->Data(), key->Size());
                 id = KeyString::decodeRecordIdStrAtEnd(ks.getBuffer(), ks.getSize());
             }
 
             recordIds.push_back(id);
-            validIndices.push_back(i);  // Track the batchVector index for this valid entry
         }
 
         assert(!recordIds.empty());
@@ -473,16 +462,15 @@ private:
         // Reserve capacity first to avoid reallocations during resize
         size_t neededSize = endIdx - startIdx;
         _prefetchedRecords.reserve(neededSize);
-        // Create a vector that aligns with batchVector indices
-        // Resize without value parameter - unique_ptr elements will default-construct to nullptr
         _prefetchedRecords.resize(neededSize);
 
         // Verify and store records in a single iteration
         // When record cannot be found with batchGetKV, error should be returned
+        // All records should be Normal and non-null since they appear in index scan results
         size_t fetchedCount = 0;
         for (size_t i = 0; i < fetchTuples.size(); ++i) {
             const auto& tuple = fetchTuples[i];
-            size_t batchVectorIdx = validIndices[i];
+            size_t batchVectorIdx = startIdx + i;
 
             // Verify record is valid - fail if not
             if (tuple.status_ != txservice::RecordStatus::Normal || tuple.record_ == nullptr) {
@@ -499,18 +487,8 @@ private:
             Eloq::MongoRecord* record = static_cast<Eloq::MongoRecord*>(tuple.record_);
             // Make a copy and store at the correct offset
             auto recordCopy = std::make_unique<Eloq::MongoRecord>(*record);
-            size_t offset = batchVectorIdx - startIdx;
-            if (offset < _prefetchedRecords.size()) {
-                _prefetchedRecords[offset] = std::move(recordCopy);
-                fetchedCount++;
-            } else {
-                // This should never happen if logic is correct, but fail if it does
-                MONGO_LOG(0) << "Offset " << offset
-                             << " out of range for prefetched records vector";
-                uassertStatusOK(Status(ErrorCodes::InternalError,
-                                       "Offset " + std::to_string(offset) +
-                                           " out of range for prefetched records"));
-            }
+            _prefetchedRecords[i] = std::move(recordCopy);
+            fetchedCount++;
         }
 
         assert(_prefetchedBatchStartIdx + _prefetchedRecords.size() <= endIdx);
