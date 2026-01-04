@@ -324,6 +324,9 @@ private:
                     _indexType == IndexCursorType::UNIQUE) {
                     _ensureRecordsFetched();
                 }
+
+                // Update _recordPtr after records are fetched
+                _updateRecordPtr();
             }
         }
 
@@ -368,17 +371,18 @@ private:
         }
 
         // Current index of the tuple in the index scan batch
-        size_t indexScanBatchIdx = _cursor->getCurrentBatchTupleIdx();
+        size_t currentIndexScanBatchIdx = _cursor->getCurrentBatchTupleIdx();
 
         // Check if current scan index is within prefetched range
         size_t prefetchedEndIdx = _prefetchedBatchStartIdx + _prefetchedRecords.size();
-        if (indexScanBatchIdx >= _prefetchedBatchStartIdx && indexScanBatchIdx < prefetchedEndIdx) {
+        if (currentIndexScanBatchIdx >= _prefetchedBatchStartIdx &&
+            currentIndexScanBatchIdx < prefetchedEndIdx) {
             // Records already fetched for current position
             return;
         }
 
         // Need to fetch records starting from current scan index
-        _fetchRecordsForRange(indexScanBatchIdx, batchVector);
+        _fetchRecordsForRange(currentIndexScanBatchIdx, batchVector);
     }
 
     void _fetchRecordsForRange(size_t startIdx,
@@ -536,6 +540,44 @@ private:
                      << endIdx << ")";
     }
 
+    void _updateRecordPtr() {
+        MONGO_LOG(1) << "EloqIndexCursor::_updateRecordPtr " << _indexName->StringView();
+
+        switch (_indexType) {
+            case IndexCursorType::ID: {
+                _recordPtr = _scanTupleRecord;
+            } break;
+            case IndexCursorType::UNIQUE:
+            case IndexCursorType::STANDARD: {
+                // Look up prefetched record by index
+                // Get current scan batch index directly from EloqCursor (no need to search)
+                // The corresponding index of record vector is scanBatchIdx -
+                // _prefetchedBatchStartIdx
+                size_t currentIndexScanBatchIdx = _cursor->getCurrentBatchTupleIdx();
+
+                if (currentIndexScanBatchIdx >= _prefetchedBatchStartIdx) {
+                    size_t offset = currentIndexScanBatchIdx - _prefetchedBatchStartIdx;
+                    if (offset < _prefetchedRecords.size() &&
+                        _prefetchedRecords[offset] != nullptr) {
+                        _recordPtr = _prefetchedRecords[offset].get();  // Use prefetched record
+                    } else {
+                        _recordPtr = nullptr;  // Record not fetched (error case or out of range)
+                        MONGO_LOG(1) << "RecordId not found in prefetched records at offset "
+                                     << offset << " (scan index " << currentIndexScanBatchIdx
+                                     << ") for index " << _indexName->StringView();
+                    }
+                } else {
+                    _recordPtr = nullptr;  // Current index before prefetched range
+                    MONGO_LOG(1) << "Current scan index " << currentIndexScanBatchIdx
+                                 << " is before prefetched range starting at "
+                                 << _prefetchedBatchStartIdx;
+                }
+            } break;
+            default:
+                MONGO_UNREACHABLE;
+        }
+    }
+
     void _updateIdAndTypeBits() {
         MONGO_LOG(1) << "EloqIndexCursor::_updateIdAndTypeBits " << _indexName->StringView();
 
@@ -545,69 +587,18 @@ private:
                 BufReader br{_scanTupleRecord->UnpackInfoData(),
                              static_cast<unsigned int>(_scanTupleRecord->UnpackInfoSize())};
                 _typeBits.resetFromBuffer(&br);
-                _recordPtr = _scanTupleRecord;
             } break;
             case IndexCursorType::UNIQUE: {
                 _id = _scanTupleRecord->ToRecordId(false);
                 BufReader br{_scanTupleRecord->UnpackInfoData(),
                              static_cast<unsigned int>(_scanTupleRecord->UnpackInfoSize())};
                 _typeBits.resetFromBuffer(&br);
-
-                // Look up prefetched record by index
-                // Get current scan batch index directly from EloqCursor (no need to search)
-                // The corresponding index of record vector is scanBatchIdx -
-                // _prefetchedBatchStartIdx
-                size_t scanBatchIdx = _cursor->getCurrentBatchTupleIdx();
-
-                if (scanBatchIdx >= _prefetchedBatchStartIdx) {
-                    size_t offset = scanBatchIdx - _prefetchedBatchStartIdx;
-                    if (offset < _prefetchedRecords.size() &&
-                        _prefetchedRecords[offset] != nullptr) {
-                        _recordPtr = _prefetchedRecords[offset].get();  // Use prefetched record
-                    } else {
-                        _recordPtr = nullptr;  // Record not fetched (error case or out of range)
-                        MONGO_LOG(1) << "RecordId " << _id.toString()
-                                     << " not found in prefetched records at offset " << offset
-                                     << " (scan index " << scanBatchIdx << ") for index "
-                                     << _indexName->StringView();
-                    }
-                } else {
-                    _recordPtr = nullptr;  // Current index before prefetched range
-                    MONGO_LOG(1) << "Current scan index " << scanBatchIdx
-                                 << " is before prefetched range starting at "
-                                 << _prefetchedBatchStartIdx;
-                }
             } break;
             case IndexCursorType::STANDARD: {
                 _id = KeyString::decodeRecordIdStrAtEnd(_key.getBuffer(), _key.getSize());
                 BufReader br{_scanTupleRecord->UnpackInfoData(),
                              static_cast<unsigned int>(_scanTupleRecord->UnpackInfoSize())};
                 _typeBits.resetFromBuffer(&br);
-
-                // Look up prefetched record by index
-                // Get current scan batch index directly from EloqCursor (no need to search)
-                // The corresponding index of record vector is scanBatchIdx -
-                // _prefetchedBatchStartIdx
-                size_t scanBatchIdx = _cursor->getCurrentBatchTupleIdx();
-
-                if (scanBatchIdx >= _prefetchedBatchStartIdx) {
-                    size_t offset = scanBatchIdx - _prefetchedBatchStartIdx;
-                    if (offset < _prefetchedRecords.size() &&
-                        _prefetchedRecords[offset] != nullptr) {
-                        _recordPtr = _prefetchedRecords[offset].get();  // Use prefetched record
-                    } else {
-                        _recordPtr = nullptr;  // Record not fetched (error case or out of range)
-                        MONGO_LOG(1) << "RecordId " << _id.toString()
-                                     << " not found in prefetched records at offset " << offset
-                                     << " (scan index " << scanBatchIdx << ") for index "
-                                     << _indexName->StringView();
-                    }
-                } else {
-                    _recordPtr = nullptr;  // Current index before prefetched range
-                    MONGO_LOG(1) << "Current scan index " << scanBatchIdx
-                                 << " is before prefetched range starting at "
-                                 << _prefetchedBatchStartIdx;
-                }
                 break;
             }
             default:
