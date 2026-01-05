@@ -322,7 +322,11 @@ private:
                 // current position
                 if (_indexType == IndexCursorType::STANDARD ||
                     _indexType == IndexCursorType::UNIQUE) {
-                    _ensureRecordsFetched();
+                    // For upsert operations, we dont prefetch records here to avoid
+                    // unnecessary locks
+                    if (!_opCtx->isUpsert()) {
+                        _ensureRecordsFetched();
+                    }
                 }
             }
         }
@@ -452,6 +456,7 @@ private:
         const txservice::TableName& tableName = _idx->getTableName();
         uint64_t schemaVersion = _ru->getIndexSchema(tableName)->SchemaTs();
         bool isForWrite = _opCtx->isUpsert();
+        assert(!isForWrite);
 
         txservice::TxErrorCode err =
             _ru->batchGetKV(_opCtx, tableName, schemaVersion, fetchTuples, isForWrite);
@@ -504,31 +509,34 @@ private:
             } break;
             case IndexCursorType::UNIQUE:
             case IndexCursorType::STANDARD: {
-                // Look up prefetched record by index
-                // Get current scan batch index directly from EloqCursor (no need to search)
-                // The corresponding index of record vector is scanBatchIdx -
-                // _prefetchedBatchStartIdx
-                size_t currentIndexScanBatchIdx = _cursor->getCurrentBatchTupleIdx();
+                // We dont have prefetch records for upsert operations
+                if (!_opCtx->isUpsert()) {
+                    // Look up prefetched record by index
+                    // Get current scan batch index directly from EloqCursor (no need to search)
+                    // The corresponding index of record vector is scanBatchIdx -
+                    // _prefetchedBatchStartIdx
+                    size_t currentIndexScanBatchIdx = _cursor->getCurrentBatchTupleIdx();
 
-                if (currentIndexScanBatchIdx >= _prefetchedBatchStartIdx) {
-                    size_t offset = currentIndexScanBatchIdx - _prefetchedBatchStartIdx;
-                    if (offset < _prefetchedRecords.size() &&
-                        _prefetchedRecords[offset] != nullptr) {
-                        _recordPtr = _prefetchedRecords[offset].get();  // Use prefetched record
-                        MONGO_LOG(1)
-                            << "found. id: " << _id.toString()
-                            << ". record:" << BSONObj{_recordPtr->EncodedBlobData()}.jsonString();
+                    if (currentIndexScanBatchIdx >= _prefetchedBatchStartIdx) {
+                        size_t offset = currentIndexScanBatchIdx - _prefetchedBatchStartIdx;
+                        if (offset < _prefetchedRecords.size() &&
+                            _prefetchedRecords[offset] != nullptr) {
+                            _recordPtr = _prefetchedRecords[offset].get();  // Use prefetched record
+                            MONGO_LOG(1) << "found. id: " << _id.toString() << ". record:"
+                                         << BSONObj{_recordPtr->EncodedBlobData()}.jsonString();
+                        } else {
+                            _recordPtr =
+                                nullptr;  // Record not fetched (error case or out of range)
+                            MONGO_LOG(1) << "RecordId not found in prefetched records at offset "
+                                         << offset << " (scan index " << currentIndexScanBatchIdx
+                                         << ") for index " << _indexName->StringView();
+                        }
                     } else {
-                        _recordPtr = nullptr;  // Record not fetched (error case or out of range)
-                        MONGO_LOG(1) << "RecordId not found in prefetched records at offset "
-                                     << offset << " (scan index " << currentIndexScanBatchIdx
-                                     << ") for index " << _indexName->StringView();
+                        _recordPtr = nullptr;  // Current index before prefetched range
+                        MONGO_LOG(1) << "Current scan index " << currentIndexScanBatchIdx
+                                     << " is before prefetched range starting at "
+                                     << _prefetchedBatchStartIdx;
                     }
-                } else {
-                    _recordPtr = nullptr;  // Current index before prefetched range
-                    MONGO_LOG(1) << "Current scan index " << currentIndexScanBatchIdx
-                                 << " is before prefetched range starting at "
-                                 << _prefetchedBatchStartIdx;
                 }
             } break;
             default:
