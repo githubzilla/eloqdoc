@@ -209,6 +209,7 @@ public:
         if (!_cursor || !_cursor->indexScanIsOpen()) {
             // Place the cursor after the last returned key when restore
             _seekCursor(_key, false);
+            _clearPrefetchedRecords();
         }
     }
 
@@ -324,9 +325,6 @@ private:
                     _indexType == IndexCursorType::UNIQUE) {
                     _ensureRecordsFetched();
                 }
-
-                // Update _recordPtr after records are fetched
-                _updateRecordPtr();
             }
         }
 
@@ -343,6 +341,9 @@ private:
         }
 
         _updateIdAndTypeBits();
+
+        // Update _recordPtr after records are fetched
+        _updateRecordPtr();
     }
 
     void _ensureRecordsFetched() {
@@ -457,7 +458,7 @@ private:
             _ru->batchGetKV(_opCtx, tableName, schemaVersion, fetchTuples, isForWrite);
 
         if (err != txservice::TxErrorCode::NO_ERROR) {
-            MONGO_LOG(1) << "Batch fetch failed for table " << tableName.StringView() << ", range ["
+            MONGO_LOG(0) << "Batch fetch failed for table " << tableName.StringView() << ", range ["
                          << startIdx << "-" << endIdx << "), error: " << err;
             // Clear prefetched records on error and return error
             _prefetchedRecords.clear();
@@ -515,6 +516,9 @@ private:
                     if (offset < _prefetchedRecords.size() &&
                         _prefetchedRecords[offset] != nullptr) {
                         _recordPtr = _prefetchedRecords[offset].get();  // Use prefetched record
+                        MONGO_LOG(1)
+                            << "found. id: " << _id.toString()
+                            << ". record:" << BSONObj{_recordPtr->EncodedBlobData()}.jsonString();
                     } else {
                         _recordPtr = nullptr;  // Record not fetched (error case or out of range)
                         MONGO_LOG(1) << "RecordId not found in prefetched records at offset "
