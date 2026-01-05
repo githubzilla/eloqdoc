@@ -537,6 +537,9 @@ private:
                                      << " is before prefetched range starting at "
                                      << _prefetchedBatchStartIdx;
                     }
+                } else {
+                    // For upsert operations, we dont prefetch records
+                    _recordPtr = nullptr;
                 }
             } break;
             default:
