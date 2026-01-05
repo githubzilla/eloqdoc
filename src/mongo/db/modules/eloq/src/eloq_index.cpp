@@ -209,7 +209,6 @@ public:
         if (!_cursor || !_cursor->indexScanIsOpen()) {
             // Place the cursor after the last returned key when restore
             _seekCursor(_key, false);
-            _clearPrefetchedRecords();
         }
     }
 
@@ -296,7 +295,7 @@ private:
                                direction,
                                isForWrite,
                                _endPosition ? true : false);
-
+        _clearPrefetchedRecords();
         return true;
     }
 
