@@ -456,23 +456,25 @@ private:
             return;
         }
 
-        // Create records only for Normal tuples that we'll fetch
-        // We'll map them back to correct positions after fetching
-        std::vector<std::unique_ptr<Eloq::MongoRecord>> fetchRecords;
-        fetchRecords.reserve(recordIds.size());
-        for (size_t i = 0; i < recordIds.size(); ++i) {
-            fetchRecords.push_back(std::make_unique<Eloq::MongoRecord>());
-        }
-
-        // Build fetchTuples for batchGetKV using fetchRecords
+        // Create records directly in _prefetchedRecords at the correct positions
+        // and build fetchTuples using those same records
         std::vector<txservice::ScanBatchTuple> fetchTuples;
         fetchTuples.reserve(recordIds.size());
         auto docKeys = std::make_unique<Eloq::MongoKey[]>(recordIds.size());
 
-        for (size_t i = 0; i < recordIds.size(); ++i) {
-            Eloq::MongoKey& docKey = docKeys[i];
-            docKey.SetPackedKey(recordIds[i]);
-            fetchTuples.emplace_back(txservice::TxKey(&docKey), fetchRecords[i].get());
+        for (size_t recordIdsIdx = 0; recordIdsIdx < recordIds.size(); ++recordIdsIdx) {
+            // Get the batchVector index and calculate the prefetch offset
+            size_t batchVectorIdx = recordIdsIdxToBatchIdx[recordIdsIdx];
+            size_t prefetchOffset = batchVectorIdx - startIdx;
+
+            // Create the record directly in _prefetchedRecords at the correct position
+            _prefetchedRecords[prefetchOffset] = std::make_unique<Eloq::MongoRecord>();
+
+            // Build the fetch tuple using the record we just created
+            Eloq::MongoKey& docKey = docKeys[recordIdsIdx];
+            docKey.SetPackedKey(recordIds[recordIdsIdx]);
+            fetchTuples.emplace_back(txservice::TxKey(&docKey),
+                                     _prefetchedRecords[prefetchOffset].get());
         }
 
         // Execute batch fetch
@@ -494,23 +496,17 @@ private:
             return;
         }
 
-        // Verify records and map them back to correct positions in _prefetchedRecords
+        // Verify records after batchGetKV
         // When record cannot be found with batchGetKV, error should be returned
         // All fetched records should be Normal and non-null since they appear in index scan results
         size_t fetchedCount = 0;
         for (size_t recordIdsIdx = 0; recordIdsIdx < fetchTuples.size(); ++recordIdsIdx) {
             const auto& tuple = fetchTuples[recordIdsIdx];
 
-            // Get the batchVector index directly from the mapping
-            size_t batchVectorIdx = recordIdsIdxToBatchIdx[recordIdsIdx];
-            size_t prefetchOffset = batchVectorIdx - startIdx;
-
             // Verify record is valid - fail if not
             assert(tuple.status_ == txservice::RecordStatus::Normal && tuple.record_ != nullptr);
 
-            // Map fetched record back to correct position in _prefetchedRecords using direct
-            // indexing
-            _prefetchedRecords[prefetchOffset] = std::move(fetchRecords[recordIdsIdx]);
+            // Records are already in _prefetchedRecords at the correct positions, no move needed
             fetchedCount++;
         }
 
