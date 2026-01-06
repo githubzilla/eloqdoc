@@ -17,6 +17,8 @@
  */
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kStorage
 
+#include <atomic>
+
 #include "mongo/util/log.h"
 
 #include "mongo/db/modules/eloq/src/eloq_cursor.h"
@@ -24,6 +26,8 @@
 
 #include "mongo/db/modules/eloq/data_substrate/tx_service/include/tx_execution.h"
 #include "mongo/db/modules/eloq/data_substrate/tx_service/include/tx_record.h"
+
+#include <butil/time.h>
 
 namespace mongo {
 EloqCursor::EloqCursor(OperationContext* opCtx) : _opCtx(opCtx), _ru(EloqRecoveryUnit::get(opCtx)) {
@@ -188,8 +192,36 @@ txservice::TxErrorCode EloqCursor::_fetchBatchTuples() {
                                                  coro.resumeFuncPtr,
                                                  _txm);
     scanBatchTxReq.prefetch_slice_cnt_ = PrefetchSize();
+
+    // Track latency and statistics for scanBatchTxReq
+    static std::atomic<uint64_t> scanBatchTxReqCallCount{0};
+    static std::atomic<uint64_t> totalLatencyUs{0};
+    static std::atomic<uint64_t> totalFetchTuplesSize{0};
+
+    butil::Timer timer;
+    timer.start();
+
     _txm->Execute(&scanBatchTxReq);
     scanBatchTxReq.Wait();
+
+    timer.stop();
+    uint64_t latencyUs = timer.u_elapsed();
+    size_t fetchTuplesSize = _scanBatchVector.size();
+
+    // Update statistics
+    uint64_t count = scanBatchTxReqCallCount.fetch_add(1) + 1;
+    totalLatencyUs.fetch_add(latencyUs);
+    totalFetchTuplesSize.fetch_add(fetchTuplesSize);
+
+    // Log every 10000 calls
+    if (count % 10000 == 0) {
+        uint64_t avgLatencyUs = totalLatencyUs.load() / count;
+        uint64_t avgFetchTuplesSize = totalFetchTuplesSize.load() / count;
+        MONGO_LOG(0) << "scanBatchTxReq statistics after " << count << " calls: "
+                     << "average latency: " << avgLatencyUs << " us, "
+                     << "average fetchTuples size: " << avgFetchTuplesSize;
+    }
+
     if (scanBatchTxReq.IsError()) {
         MONGO_LOG(1) << "EloqCursor::_fetchBatchTuples ScanBatchTxRequest fail"
                      << ". table_name: " << _scanOpenTxReq.tab_name_->StringView()
