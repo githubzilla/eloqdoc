@@ -193,10 +193,11 @@ txservice::TxErrorCode EloqCursor::_fetchBatchTuples() {
                                                  _txm);
     scanBatchTxReq.prefetch_slice_cnt_ = PrefetchSize();
 
-    // Track latency and statistics for scanBatchTxReq
+    // Track latency and statistics for scanBatchTxReq (lock-free, resets every 10000 calls)
     static std::atomic<uint64_t> scanBatchTxReqCallCount{0};
     static std::atomic<uint64_t> totalLatencyUs{0};
     static std::atomic<uint64_t> totalFetchTuplesSize{0};
+    static constexpr uint64_t WINDOW_SIZE = 10000;
 
     butil::Timer timer;
     timer.start();
@@ -208,16 +209,20 @@ txservice::TxErrorCode EloqCursor::_fetchBatchTuples() {
     uint64_t latencyUs = timer.u_elapsed();
     size_t fetchTuplesSize = _scanBatchVector.size();
 
-    // Update statistics
-    uint64_t count = scanBatchTxReqCallCount.fetch_add(1) + 1;
-    totalLatencyUs.fetch_add(latencyUs);
-    totalFetchTuplesSize.fetch_add(fetchTuplesSize);
+    // Update statistics (lock-free using atomics)
+    uint64_t count = scanBatchTxReqCallCount.fetch_add(1, std::memory_order_relaxed) + 1;
+    totalLatencyUs.fetch_add(latencyUs, std::memory_order_relaxed);
+    totalFetchTuplesSize.fetch_add(fetchTuplesSize, std::memory_order_relaxed);
 
-    // Log every 10000 calls
-    if (count % 10000 == 0) {
-        uint64_t avgLatencyUs = totalLatencyUs.load() / count;
-        uint64_t avgFetchTuplesSize = totalFetchTuplesSize.load() / count;
-        MONGO_LOG(0) << "scanBatchTxReq statistics after " << count << " calls: "
+    // Log every 10000 calls with statistics from recent window
+    if (count % WINDOW_SIZE == 0) {
+        // Use memory_order_acquire to ensure we see all updates before reading
+        uint64_t windowTotalLatencyUs = totalLatencyUs.exchange(0, std::memory_order_acq_rel);
+        uint64_t windowTotalFetchTuplesSize =
+            totalFetchTuplesSize.exchange(0, std::memory_order_acq_rel);
+        uint64_t avgLatencyUs = windowTotalLatencyUs / WINDOW_SIZE;
+        uint64_t avgFetchTuplesSize = windowTotalFetchTuplesSize / WINDOW_SIZE;
+        MONGO_LOG(0) << "scanBatchTxReq statistics (recent " << WINDOW_SIZE << " calls): "
                      << "average latency: " << avgLatencyUs << " us, "
                      << "average fetchTuples size: " << avgFetchTuplesSize;
     }

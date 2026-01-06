@@ -452,6 +452,15 @@ txservice::TxErrorCode EloqRecoveryUnit::batchGetKV(OperationContext* opCtx,
                  << ", batch size: " << batch.size();
     const CoroutineFunctors& coro = Client::getCurrent()->coroutineFunctors();
 
+    // Track latency and statistics for batchGetKV (lock-free, resets every 10000 calls)
+    static std::atomic<uint64_t> batchGetKVCallCount{0};
+    static std::atomic<uint64_t> totalLatencyUs{0};
+    static std::atomic<uint64_t> totalBatchSize{0};
+    static constexpr uint64_t WINDOW_SIZE = 10000;
+
+    butil::Timer timer;
+    timer.start();
+
     bool isForShare = false;
     bool readLocal = false;
     bool point_read_on_miss = true;
@@ -467,6 +476,28 @@ txservice::TxErrorCode EloqRecoveryUnit::batchGetKV(OperationContext* opCtx,
                                                  point_read_on_miss);
     _txm->Execute(&batchReadTxReq);
     batchReadTxReq.Wait();
+
+    timer.stop();
+    uint64_t latencyUs = timer.u_elapsed();
+    size_t batchSize = batch.size();
+
+    // Update statistics (lock-free using atomics)
+    uint64_t count = batchGetKVCallCount.fetch_add(1, std::memory_order_relaxed) + 1;
+    totalLatencyUs.fetch_add(latencyUs, std::memory_order_relaxed);
+    totalBatchSize.fetch_add(batchSize, std::memory_order_relaxed);
+
+    // Log every 10000 calls with statistics from recent window
+    if (count % WINDOW_SIZE == 0) {
+        // Use memory_order_acquire to ensure we see all updates before reading
+        uint64_t windowTotalLatencyUs = totalLatencyUs.exchange(0, std::memory_order_acq_rel);
+        uint64_t windowTotalBatchSize = totalBatchSize.exchange(0, std::memory_order_acq_rel);
+        uint64_t avgLatencyUs = windowTotalLatencyUs / WINDOW_SIZE;
+        uint64_t avgBatchSize = windowTotalBatchSize / WINDOW_SIZE;
+        MONGO_LOG(0) << "batchGetKV statistics (recent " << WINDOW_SIZE << " calls): "
+                     << "average latency: " << avgLatencyUs << " us, "
+                     << "average batch size: " << avgBatchSize;
+    }
+
     txservice::TxErrorCode err = batchReadTxReq.ErrorCode();
     if (err == txservice::TxErrorCode::NO_ERROR) {
         MONGO_LOG(1) << "EloqRecoveryUnit::batchGetKV tableName: " << tableName.StringView()
