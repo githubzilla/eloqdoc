@@ -391,13 +391,21 @@ private:
         // The RecordId should be extracted from _scanBatchVector before calling batchGetKV
         // This ensures we have the RecordIds ready before making the batchGetKV call
         // Note: _idx is a member variable of EloqIndexCursor (const EloqIndex* _idx, line 421)
-        // If a record ID appears in the index scan result, it should always be Normal and non-null
+        // Some entries in index scan results may be Deleted, which should be skipped
+        // We maintain a mapping from recordIds index to batchVector index for efficient lookup
         std::vector<RecordId> recordIds;
+        std::vector<size_t> recordIdsIdxToBatchIdx;  // Maps recordIds index to batchVector index
         recordIds.reserve(endIdx - startIdx);
+        recordIdsIdxToBatchIdx.reserve(endIdx - startIdx);
 
         for (size_t i = startIdx; i < endIdx; ++i) {
             const auto& tuple = batchVector[i];
-            // All entries in index scan results should be Normal and non-null
+            // Skip Deleted records - they create holes in prefetchRecords (nullptr entries)
+            if (tuple.status_ == txservice::RecordStatus::Deleted) {
+                continue;
+            }
+
+            // Only extract RecordId for Normal status tuples
             assert(tuple.status_ == txservice::RecordStatus::Normal);
             RecordId id;
             if (_indexType == IndexCursorType::UNIQUE) {
@@ -415,14 +423,17 @@ private:
                 id = KeyString::decodeRecordIdStrAtEnd(ks.getBuffer(), ks.getSize());
             }
 
+            recordIdsIdxToBatchIdx.push_back(
+                i);  // Store batchVector index for this recordIds entry
             recordIds.push_back(id);
         }
 
-        assert(!recordIds.empty());
+        // It's possible all records in the range are deleted, so we allow empty recordIds
 
         // Update logging with actual RecordIds count
         MONGO_LOG(1) << "Starting batch fetch for range [" << startIdx << "-" << endIdx << "), "
-                     << recordIds.size() << " RecordIds, batch size: " << batchSize
+                     << recordIds.size() << " RecordIds (out of " << (endIdx - startIdx)
+                     << " total entries), batch size: " << batchSize
                      << ", index: " << _indexName->StringView();
 
         // Prepare _prefetchedRecords before batchGetKV so we can use them directly
@@ -432,15 +443,28 @@ private:
         // Note: _lastRecordsBatchCnt is already updated in _ensureRecordsFetched() before calling
         // this method
 
-        // Reserve capacity and create records for batchGetKV
+        // Reserve capacity and initialize with nullptr (for deleted records)
+        // Only create records for Normal status tuples
         size_t neededSize = endIdx - startIdx;
         _prefetchedRecords.reserve(neededSize);
-        _prefetchedRecords.resize(neededSize);
-        for (size_t i = 0; i < neededSize; ++i) {
-            _prefetchedRecords[i] = std::make_unique<Eloq::MongoRecord>();
+        _prefetchedRecords.resize(neededSize);  // Default-constructs unique_ptrs (nullptr)
+
+        // If all records are deleted, skip batchGetKV
+        if (recordIds.empty()) {
+            MONGO_LOG(1) << "All records in range [" << startIdx << "-" << endIdx
+                         << ") are deleted, skipping batch fetch";
+            return;
         }
 
-        // Build fetchTuples for batchGetKV using _prefetchedRecords directly
+        // Create records only for Normal tuples that we'll fetch
+        // We'll map them back to correct positions after fetching
+        std::vector<std::unique_ptr<Eloq::MongoRecord>> fetchRecords;
+        fetchRecords.reserve(recordIds.size());
+        for (size_t i = 0; i < recordIds.size(); ++i) {
+            fetchRecords.push_back(std::make_unique<Eloq::MongoRecord>());
+        }
+
+        // Build fetchTuples for batchGetKV using fetchRecords
         std::vector<txservice::ScanBatchTuple> fetchTuples;
         fetchTuples.reserve(recordIds.size());
         auto docKeys = std::make_unique<Eloq::MongoKey[]>(recordIds.size());
@@ -448,8 +472,7 @@ private:
         for (size_t i = 0; i < recordIds.size(); ++i) {
             Eloq::MongoKey& docKey = docKeys[i];
             docKey.SetPackedKey(recordIds[i]);
-            // Use _prefetchedRecords directly instead of creating a separate docRecords array
-            fetchTuples.emplace_back(txservice::TxKey(&docKey), _prefetchedRecords[i].get());
+            fetchTuples.emplace_back(txservice::TxKey(&docKey), fetchRecords[i].get());
         }
 
         // Execute batch fetch
@@ -471,33 +494,30 @@ private:
             return;
         }
 
-        // Verify records in a single iteration
+        // Verify records and map them back to correct positions in _prefetchedRecords
         // When record cannot be found with batchGetKV, error should be returned
-        // All records should be Normal and non-null since they appear in index scan results
+        // All fetched records should be Normal and non-null since they appear in index scan results
         size_t fetchedCount = 0;
-        for (size_t i = 0; i < fetchTuples.size(); ++i) {
-            const auto& tuple = fetchTuples[i];
-            size_t batchVectorIdx = startIdx + i;
+        for (size_t recordIdsIdx = 0; recordIdsIdx < fetchTuples.size(); ++recordIdsIdx) {
+            const auto& tuple = fetchTuples[recordIdsIdx];
+
+            // Get the batchVector index directly from the mapping
+            size_t batchVectorIdx = recordIdsIdxToBatchIdx[recordIdsIdx];
+            size_t prefetchOffset = batchVectorIdx - startIdx;
 
             // Verify record is valid - fail if not
-            if (tuple.status_ != txservice::RecordStatus::Normal || tuple.record_ == nullptr) {
-                MONGO_LOG(1) << "Record at batch index " << batchVectorIdx
-                             << " not found or has non-normal status: "
-                             << static_cast<int>(tuple.status_);
-                // Return error if record cannot be found
-                uassertStatusOK(Status(ErrorCodes::InternalError,
-                                       "Failed to fetch record at batch index " +
-                                           std::to_string(batchVectorIdx)));
-            }
+            assert(tuple.status_ == txservice::RecordStatus::Normal && tuple.record_ != nullptr);
 
-            // Records are already in _prefetchedRecords, no copy needed
+            // Map fetched record back to correct position in _prefetchedRecords using direct
+            // indexing
+            _prefetchedRecords[prefetchOffset] = std::move(fetchRecords[recordIdsIdx]);
             fetchedCount++;
         }
 
         assert(_prefetchedBatchStartIdx + _prefetchedRecords.size() <= endIdx);
 
         MONGO_LOG(1) << "Fetched " << fetchedCount << " records in range [" << startIdx << "-"
-                     << endIdx << ")";
+                     << endIdx << ") (with " << (neededSize - fetchedCount) << " deleted entries)";
     }
 
     void _updateRecordPtr() {
