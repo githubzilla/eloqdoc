@@ -496,24 +496,23 @@ private:
             return;
         }
 
-        // Verify records after batchGetKV
+#ifndef NDEBUG
+        // Verify records after batchGetKV (debug build only)
         // When record cannot be found with batchGetKV, error should be returned
         // All fetched records should be Normal and non-null since they appear in index scan results
-        size_t fetchedCount = 0;
         for (size_t recordIdsIdx = 0; recordIdsIdx < fetchTuples.size(); ++recordIdsIdx) {
             const auto& tuple = fetchTuples[recordIdsIdx];
 
             // Verify record is valid - fail if not
             assert(tuple.status_ == txservice::RecordStatus::Normal && tuple.record_ != nullptr);
-
-            // Records are already in _prefetchedRecords at the correct positions, no move needed
-            fetchedCount++;
         }
+#endif
 
         assert(_prefetchedBatchStartIdx + _prefetchedRecords.size() <= endIdx);
 
-        MONGO_LOG(1) << "Fetched " << fetchedCount << " records in range [" << startIdx << "-"
-                     << endIdx << ") (with " << (neededSize - fetchedCount) << " deleted entries)";
+        MONGO_LOG(1) << "Fetched " << fetchTuples.size() << " records in range [" << startIdx << "-"
+                     << endIdx << ") (with " << (neededSize - fetchTuples.size())
+                     << " deleted entries)";
     }
 
     void _updateRecordPtr() {
