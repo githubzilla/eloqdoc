@@ -156,7 +156,7 @@ Status ProjectionStage::transform(WorkingSetMember* member) {
     timer.start();
 
     // The default no-fast-path case.
-    Status result;
+    Status result = Status::OK();
     if (ProjectionStageParams::NO_FAST_PATH == _projImpl) {
         result = _exec->transform(member);
     } else {
