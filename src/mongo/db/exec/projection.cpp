@@ -28,6 +28,8 @@
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kQuery
 
+#include <atomic>
+
 #include "mongo/db/exec/projection.h"
 
 #include "mongo/db/exec/plan_stage.h"
@@ -39,6 +41,8 @@
 #include "mongo/stdx/memory.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
+
+#include <butil/time.h>
 
 namespace mongo {
 
@@ -143,49 +147,77 @@ void ProjectionStage::transformSimpleInclusion(const BSONObj& in,
 }
 
 Status ProjectionStage::transform(WorkingSetMember* member) {
+    // Track latency and statistics for transform (lock-free, resets every 10000 calls)
+    static std::atomic<uint64_t> transformCallCount{0};
+    static std::atomic<uint64_t> totalLatencyUs{0};
+    static constexpr uint64_t WINDOW_SIZE = 100000;
+
+    butil::Timer timer;
+    timer.start();
+
     // The default no-fast-path case.
+    Status result;
     if (ProjectionStageParams::NO_FAST_PATH == _projImpl) {
-        return _exec->transform(member);
-    }
-
-    BSONObjBuilder bob;
-
-    // Note that even if our fast path analysis is bug-free something that is
-    // covered might be invalidated and just be an obj.  In this case we just go
-    // through the SIMPLE_DOC path which is still correct if the covered data
-    // is not available.
-    //
-    // SIMPLE_DOC implies that we expect an object so it's kind of redundant.
-    if ((ProjectionStageParams::SIMPLE_DOC == _projImpl) || member->hasObj()) {
-        // If we got here because of SIMPLE_DOC the planner shouldn't have messed up.
-        invariant(member->hasObj());
-
-        // Apply the SIMPLE_DOC projection.
-        transformSimpleInclusion(member->obj.value(), _includedFields, bob);
+        result = _exec->transform(member);
     } else {
-        invariant(ProjectionStageParams::COVERED_ONE_INDEX == _projImpl);
-        // We're pulling data out of the key.
-        invariant(1 == member->keyData.size());
-        size_t keyIndex = 0;
+        BSONObjBuilder bob;
 
-        // Look at every key element...
-        BSONObjIterator keyIterator(member->keyData[0].keyData);
-        while (keyIterator.more()) {
-            BSONElement elt = keyIterator.next();
-            // If we're supposed to include it...
-            if (_includeKey[keyIndex]) {
-                // Do so.
-                bob.appendAs(elt, _keyFieldNames[keyIndex]);
+        // Note that even if our fast path analysis is bug-free something that is
+        // covered might be invalidated and just be an obj.  In this case we just go
+        // through the SIMPLE_DOC path which is still correct if the covered data
+        // is not available.
+        //
+        // SIMPLE_DOC implies that we expect an object so it's kind of redundant.
+        if ((ProjectionStageParams::SIMPLE_DOC == _projImpl) || member->hasObj()) {
+            // If we got here because of SIMPLE_DOC the planner shouldn't have messed up.
+            invariant(member->hasObj());
+
+            // Apply the SIMPLE_DOC projection.
+            transformSimpleInclusion(member->obj.value(), _includedFields, bob);
+        } else {
+            invariant(ProjectionStageParams::COVERED_ONE_INDEX == _projImpl);
+            // We're pulling data out of the key.
+            invariant(1 == member->keyData.size());
+            size_t keyIndex = 0;
+
+            // Look at every key element...
+            BSONObjIterator keyIterator(member->keyData[0].keyData);
+            while (keyIterator.more()) {
+                BSONElement elt = keyIterator.next();
+                // If we're supposed to include it...
+                if (_includeKey[keyIndex]) {
+                    // Do so.
+                    bob.appendAs(elt, _keyFieldNames[keyIndex]);
+                }
+                ++keyIndex;
             }
-            ++keyIndex;
         }
+
+        member->keyData.clear();
+        member->recordId = RecordId();
+        member->obj = Snapshotted<BSONObj>(SnapshotId(), bob.obj());
+        member->transitionToOwnedObj();
+        result = Status::OK();
     }
 
-    member->keyData.clear();
-    member->recordId = RecordId();
-    member->obj = Snapshotted<BSONObj>(SnapshotId(), bob.obj());
-    member->transitionToOwnedObj();
-    return Status::OK();
+    timer.stop();
+    uint64_t latencyUs = timer.u_elapsed();
+
+    // Update statistics (lock-free using atomics)
+    uint64_t count = transformCallCount.fetch_add(1, std::memory_order_relaxed) + 1;
+    totalLatencyUs.fetch_add(latencyUs, std::memory_order_relaxed);
+
+    // Log every 10000 calls with statistics from recent window
+    if (count % WINDOW_SIZE == 0) {
+        // Use memory_order_acquire to ensure we see all updates before reading
+        uint64_t windowTotalLatencyUs = totalLatencyUs.exchange(0, std::memory_order_acq_rel);
+        uint64_t avgLatencyUs = windowTotalLatencyUs / WINDOW_SIZE;
+        MONGO_LOG(0) << "ProjectionStage::transform statistics (recent " << WINDOW_SIZE
+                     << " calls): "
+                     << "average latency: " << avgLatencyUs << " us";
+    }
+
+    return result;
 }
 
 bool ProjectionStage::isEOF() {
