@@ -66,14 +66,34 @@ public:
           _key{_idx->keyStringVersion()},
           _typeBits{_idx->keyStringVersion()},
           _query{_idx->keyStringVersion()} {
-        // _timer.start();
+        _timer.start();
         MONGO_LOG(1) << "EloqIndexCursor::EloqIndexCursor " << _indexName->StringView();
     }
 
     ~EloqIndexCursor() override {
         MONGO_LOG(1) << "EloqIndexCursor::~EloqIndexCursor";
-        // _timer.stop();
-        // recorder::kIdReadLatency << _timer.u_elapsed();
+        _timer.stop();
+        uint64_t latencyUs = _timer.u_elapsed();
+
+        // Track latency and statistics for EloqIndexCursor lifetime (lock-free, resets every 10000
+        // calls)
+        static std::atomic<uint64_t> cursorLifetimeCallCount{0};
+        static std::atomic<uint64_t> totalLatencyUs{0};
+        static constexpr uint64_t WINDOW_SIZE = 10000;
+
+        // Update statistics (lock-free using atomics)
+        uint64_t count = cursorLifetimeCallCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        totalLatencyUs.fetch_add(latencyUs, std::memory_order_relaxed);
+
+        // Log every 10000 calls with statistics from recent window
+        if (count % WINDOW_SIZE == 0) {
+            // Use memory_order_acquire to ensure we see all updates before reading
+            uint64_t windowTotalLatencyUs = totalLatencyUs.exchange(0, std::memory_order_acq_rel);
+            uint64_t avgLatencyUs = windowTotalLatencyUs / WINDOW_SIZE;
+            MONGO_LOG(0) << "EloqIndexCursor lifetime statistics (recent " << WINDOW_SIZE
+                         << " cursors): "
+                         << "average lifetime: " << avgLatencyUs << " us";
+        }
     }
 
     void reset(const EloqIndex* idx,
