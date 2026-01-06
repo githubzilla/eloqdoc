@@ -258,6 +258,7 @@ PlanStage::StageState TextOrStage::returnResults(WorkingSetID* out) {
 
 PlanStage::StageState TextOrStage::addTerm(WorkingSetID wsid, WorkingSetID* out) {
     WorkingSetMember* wsm = _ws->get(wsid);
+    // Note: With batch index row lookup, WorkingSetMember state is RID_AND_OBJ
     // invariant(wsm->getState() == WorkingSetMember::RID_AND_IDX);
     invariant(1 == wsm->keyData.size());
     const IndexKeyDatum newKeyData = wsm->keyData.back();  // copy to keep it around.
