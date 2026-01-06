@@ -17,6 +17,7 @@
  */
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kStorage  // NO LINT
 
+#include <atomic>
 #include <cassert>
 #include <memory>
 #include <string_view>
@@ -483,8 +484,34 @@ private:
         bool isForWrite = _opCtx->isUpsert();
         assert(!isForWrite);
 
+        // Track latency and statistics for batchGetKV
+        static std::atomic<uint64_t> batchGetKVCallCount{0};
+        static std::atomic<uint64_t> totalLatencyUs{0};
+        static std::atomic<uint64_t> totalFetchTuplesSize{0};
+
+        butil::Timer timer;
+        timer.start();
+
         txservice::TxErrorCode err =
             _ru->batchGetKV(_opCtx, tableName, schemaVersion, fetchTuples, isForWrite);
+
+        timer.stop();
+        uint64_t latencyUs = timer.u_elapsed();
+        size_t fetchTuplesSize = fetchTuples.size();
+
+        // Update statistics
+        uint64_t count = batchGetKVCallCount.fetch_add(1) + 1;
+        totalLatencyUs.fetch_add(latencyUs);
+        totalFetchTuplesSize.fetch_add(fetchTuplesSize);
+
+        // Log every 10000 calls
+        if (count % 10000 == 0) {
+            uint64_t avgLatencyUs = totalLatencyUs.load() / count;
+            uint64_t avgFetchTuplesSize = totalFetchTuplesSize.load() / count;
+            MONGO_LOG(0) << "batchGetKV statistics after " << count << " calls: "
+                         << "average latency: " << avgLatencyUs << " us, "
+                         << "average fetchTuples size: " << avgFetchTuplesSize;
+        }
 
         if (err != txservice::TxErrorCode::NO_ERROR) {
             MONGO_LOG(0) << "Batch fetch failed for table " << tableName.StringView() << ", range ["
