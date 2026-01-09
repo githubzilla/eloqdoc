@@ -17,6 +17,7 @@
  */
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kStorage  // NO LINT
 
+#include <algorithm>
 #include <atomic>
 #include <cassert>
 #include <memory>
