@@ -409,18 +409,18 @@ private:
             }
 
             // Only extract RecordId for Normal status tuples
-            assert(tuple.status_ == txservice::RecordStatus::Normal);
+            invariant(tuple.status_ == txservice::RecordStatus::Normal);
             RecordId id;
             if (_indexType == IndexCursorType::UNIQUE) {
                 // For UNIQUE indexes, RecordId is stored in the record data, not in the key
                 const Eloq::MongoRecord* record =
                     static_cast<const Eloq::MongoRecord*>(tuple.record_);
-                assert(record != nullptr);
+                invariant(record != nullptr);
                 id = record->ToRecordId(false);
             } else {
                 // For STANDARD indexes, RecordId is appended to the key
                 const Eloq::MongoKey* key = tuple.key_.GetKey<Eloq::MongoKey>();
-                assert(key != nullptr);
+                invariant(key != nullptr);
                 KeyString ks(_idx->keyStringVersion());
                 ks.resetFromBuffer(key->Data(), key->Size());
                 id = KeyString::decodeRecordIdStrAtEnd(ks.getBuffer(), ks.getSize());
@@ -484,7 +484,7 @@ private:
         const txservice::TableName& tableName = _idx->getTableName();
         uint64_t schemaVersion = _ru->getIndexSchema(tableName)->SchemaTs();
         bool isForWrite = _opCtx->isUpsert();
-        assert(!isForWrite);
+        invariant(!isForWrite);
 
         txservice::TxErrorCode err =
             _ru->batchGetKV(_opCtx, tableName, schemaVersion, fetchTuples, isForWrite);
