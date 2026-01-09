@@ -28,8 +28,6 @@
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kQuery
 
-#include <atomic>
-
 #include "mongo/db/exec/projection.h"
 
 #include "mongo/db/exec/plan_stage.h"
@@ -41,8 +39,6 @@
 #include "mongo/stdx/memory.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
-
-#include <butil/time.h>
 
 namespace mongo {
 
@@ -148,51 +144,48 @@ void ProjectionStage::transformSimpleInclusion(const BSONObj& in,
 
 Status ProjectionStage::transform(WorkingSetMember* member) {
     // The default no-fast-path case.
-    Status result = Status::OK();
     if (ProjectionStageParams::NO_FAST_PATH == _projImpl) {
-        result = _exec->transform(member);
-    } else {
-        BSONObjBuilder bob;
-
-        // Note that even if our fast path analysis is bug-free something that is
-        // covered might be invalidated and just be an obj.  In this case we just go
-        // through the SIMPLE_DOC path which is still correct if the covered data
-        // is not available.
-        //
-        // SIMPLE_DOC implies that we expect an object so it's kind of redundant.
-        if ((ProjectionStageParams::SIMPLE_DOC == _projImpl) || member->hasObj()) {
-            // If we got here because of SIMPLE_DOC the planner shouldn't have messed up.
-            invariant(member->hasObj());
-
-            // Apply the SIMPLE_DOC projection.
-            transformSimpleInclusion(member->obj.value(), _includedFields, bob);
-        } else {
-            invariant(ProjectionStageParams::COVERED_ONE_INDEX == _projImpl);
-            // We're pulling data out of the key.
-            invariant(1 == member->keyData.size());
-            size_t keyIndex = 0;
-
-            // Look at every key element...
-            BSONObjIterator keyIterator(member->keyData[0].keyData);
-            while (keyIterator.more()) {
-                BSONElement elt = keyIterator.next();
-                // If we're supposed to include it...
-                if (_includeKey[keyIndex]) {
-                    // Do so.
-                    bob.appendAs(elt, _keyFieldNames[keyIndex]);
-                }
-                ++keyIndex;
-            }
-        }
-
-        member->keyData.clear();
-        member->recordId = RecordId();
-        member->obj = Snapshotted<BSONObj>(SnapshotId(), bob.obj());
-        member->transitionToOwnedObj();
-        result = Status::OK();
+        return _exec->transform(member);
     }
 
-    return result;
+    BSONObjBuilder bob;
+
+    // Note that even if our fast path analysis is bug-free something that is
+    // covered might be invalidated and just be an obj.  In this case we just go
+    // through the SIMPLE_DOC path which is still correct if the covered data
+    // is not available.
+    //
+    // SIMPLE_DOC implies that we expect an object so it's kind of redundant.
+    if ((ProjectionStageParams::SIMPLE_DOC == _projImpl) || member->hasObj()) {
+        // If we got here because of SIMPLE_DOC the planner shouldn't have messed up.
+        invariant(member->hasObj());
+
+        // Apply the SIMPLE_DOC projection.
+        transformSimpleInclusion(member->obj.value(), _includedFields, bob);
+    } else {
+        invariant(ProjectionStageParams::COVERED_ONE_INDEX == _projImpl);
+        // We're pulling data out of the key.
+        invariant(1 == member->keyData.size());
+        size_t keyIndex = 0;
+
+        // Look at every key element...
+        BSONObjIterator keyIterator(member->keyData[0].keyData);
+        while (keyIterator.more()) {
+            BSONElement elt = keyIterator.next();
+            // If we're supposed to include it...
+            if (_includeKey[keyIndex]) {
+                // Do so.
+                bob.appendAs(elt, _keyFieldNames[keyIndex]);
+            }
+            ++keyIndex;
+        }
+    }
+
+    member->keyData.clear();
+    member->recordId = RecordId();
+    member->obj = Snapshotted<BSONObj>(SnapshotId(), bob.obj());
+    member->transitionToOwnedObj();
+    return Status::OK();
 }
 
 bool ProjectionStage::isEOF() {
