@@ -322,7 +322,10 @@ private:
                     // For upsert operations, we dont prefetch records here to avoid
                     // unnecessary locks
                     if (!_opCtx->isUpsert()) {
-                        _ensureRecordsFetched();
+                        auto err = _ensureRecordsFetched();
+                        if (err != txservice::TxErrorCode::NO_ERROR) {
+                            uassertStatusOK(TxErrorCodeToMongoStatus(err));
+                        }
                     }
                 }
             }
@@ -346,7 +349,7 @@ private:
         _updateRecordPtr();
     }
 
-    void _ensureRecordsFetched() {
+    txservice::TxErrorCode _ensureRecordsFetched() {
         assert(_cursor);
 
         const auto& batchVector = _cursor->getCurrentBatchVector();
@@ -369,19 +372,22 @@ private:
         if (currentIndexScanBatchIdx >= _prefetchedBatchStartIdx &&
             currentIndexScanBatchIdx < prefetchedEndIdx) {
             // Records already fetched for current position
-            return;
+            return txservice::TxErrorCode::NO_ERROR;
         }
 
+        // Get batch size from configuration
+        size_t batchSize = _getBatchFetchSize();
         // Need to fetch records starting from current scan index
-        _fetchRecordsForRange(currentIndexScanBatchIdx, batchVector);
+        return _fetchRecordsForRange(currentIndexScanBatchIdx, batchSize, batchVector);
     }
 
-    void _fetchRecordsForRange(size_t startIdx,
-                               const std::vector<txservice::ScanBatchTuple>& batchVector) {
+    txservice::TxErrorCode _fetchRecordsForRange(
+        size_t startIdx,
+        size_t batchSize,
+        const std::vector<txservice::ScanBatchTuple>& batchVector) {
         assert(startIdx < batchVector.size());
 
-        // Get batch size from configuration (smaller than full scan batch)
-        size_t batchSize = _getBatchFetchSize();
+        // endIdx smaller than full scan batch)
         size_t endIdx = std::min(startIdx + batchSize, batchVector.size());
 
         // Extract RecordIds from _scanBatchVector (via getCurrentBatchVector) BEFORE batchGetKV
@@ -450,7 +456,7 @@ private:
         if (recordIds.empty()) {
             MONGO_LOG(1) << "All records in range [" << startIdx << "-" << endIdx
                          << ") are deleted, skipping batch fetch";
-            return;
+            return txservice::TxErrorCode::NO_ERROR;
         }
 
         // Create records directly in _prefetchedRecords at the correct positions
@@ -489,8 +495,7 @@ private:
             // Clear prefetched records on error and return error
             _prefetchedRecords.clear();
             _prefetchedBatchStartIdx = 0;
-            uassertStatusOK(TxErrorCodeToMongoStatus(err));
-            return;
+            return err;
         }
 
 #ifndef NDEBUG
@@ -510,6 +515,7 @@ private:
         MONGO_LOG(1) << "Fetched " << fetchTuples.size() << " records in range [" << startIdx << "-"
                      << endIdx << ") (with " << (neededSize - fetchTuples.size())
                      << " deleted entries)";
+        return txservice::TxErrorCode::NO_ERROR;
     }
 
     void _updateRecordPtr() {
@@ -539,15 +545,17 @@ private:
                         } else {
                             _recordPtr =
                                 nullptr;  // Record not fetched (error case or out of range)
-                            MONGO_LOG(1) << "RecordId not found in prefetched records at offset "
+                            MONGO_LOG(0) << "RecordId not found in prefetched records at offset "
                                          << offset << " (scan index " << currentIndexScanBatchIdx
                                          << ") for index " << _indexName->StringView();
+                            MONGO_UNREACHABLE;
                         }
                     } else {
                         _recordPtr = nullptr;  // Current index before prefetched range
-                        MONGO_LOG(1) << "Current scan index " << currentIndexScanBatchIdx
+                        MONGO_LOG(0) << "Current scan index " << currentIndexScanBatchIdx
                                      << " is before prefetched range starting at "
                                      << _prefetchedBatchStartIdx;
+                        MONGO_UNREACHABLE;
                     }
                 } else {
                     // For upsert operations, we dont prefetch records
@@ -640,6 +648,18 @@ private:
         }
     }
 
+    void _clearPrefetchedRecords() {
+        _prefetchedRecords.clear();
+        _prefetchedBatchStartIdx = 0;
+        _lastRecordsBatchCnt = 0;
+    }
+
+    size_t _getBatchFetchSize() const {
+        int batchSize = internalEloqIndexBatchFetchSize.load();
+        // Ensure reasonable bounds: 1 to 1000
+        return std::max(1, std::min(batchSize, 1000));
+    }
+
 private:
     OperationContext* _opCtx;                  // not owned
     EloqRecoveryUnit* _ru;                     // not owned
@@ -677,18 +697,6 @@ private:
     size_t _prefetchedBatchStartIdx{
         0};                          // Starting index in scan batch for current prefetched records
     size_t _lastRecordsBatchCnt{0};  // Track batch count to detect new batches
-
-    void _clearPrefetchedRecords() {
-        _prefetchedRecords.clear();
-        _prefetchedBatchStartIdx = 0;
-        _lastRecordsBatchCnt = 0;
-    }
-
-    size_t _getBatchFetchSize() const {
-        int batchSize = internalEloqIndexBatchFetchSize.load();
-        // Ensure reasonable bounds: 1 to 1000
-        return std::max(1, std::min(batchSize, 1000));
-    }
 };
 
 class EloqIndex::BulkBuilder : public SortedDataBuilderInterface {
