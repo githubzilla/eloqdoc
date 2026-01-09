@@ -147,14 +147,6 @@ void ProjectionStage::transformSimpleInclusion(const BSONObj& in,
 }
 
 Status ProjectionStage::transform(WorkingSetMember* member) {
-    // Track latency and statistics for transform (lock-free, resets every 10000 calls)
-    static std::atomic<uint64_t> transformCallCount{0};
-    static std::atomic<uint64_t> totalLatencyUs{0};
-    static constexpr uint64_t WINDOW_SIZE = 100000;
-
-    butil::Timer timer;
-    timer.start();
-
     // The default no-fast-path case.
     Status result = Status::OK();
     if (ProjectionStageParams::NO_FAST_PATH == _projImpl) {
@@ -198,23 +190,6 @@ Status ProjectionStage::transform(WorkingSetMember* member) {
         member->obj = Snapshotted<BSONObj>(SnapshotId(), bob.obj());
         member->transitionToOwnedObj();
         result = Status::OK();
-    }
-
-    timer.stop();
-    uint64_t latencyUs = timer.u_elapsed();
-
-    // Update statistics (lock-free using atomics)
-    uint64_t count = transformCallCount.fetch_add(1, std::memory_order_relaxed) + 1;
-    totalLatencyUs.fetch_add(latencyUs, std::memory_order_relaxed);
-
-    // Log every 10000 calls with statistics from recent window
-    if (count % WINDOW_SIZE == 0) {
-        // Use memory_order_acquire to ensure we see all updates before reading
-        uint64_t windowTotalLatencyUs = totalLatencyUs.exchange(0, std::memory_order_acq_rel);
-        uint64_t avgLatencyUs = windowTotalLatencyUs / WINDOW_SIZE;
-        MONGO_LOG(0) << "ProjectionStage::transform statistics (recent " << WINDOW_SIZE
-                     << " calls): "
-                     << "average latency: " << avgLatencyUs << " us";
     }
 
     return result;
