@@ -157,9 +157,11 @@ launch_eloqdoc() {
 	          --data_substrate_config=./concourse/scripts/data_substrate.cnf \
             --eloq_store_cloud_endpoint=${ELOQ_AWS_S3_ENDPOINT_URL} \
             --eloq_store_cloud_store_path="${bucket_prefix}${bucket_name}/eloqstore"
+            --eloq_store_cloud_access_key=${ELOQ_AWS_ACCESS_KEY_ID} \
+            --eloq_store_cloud_secret_key=${ELOQ_AWS_SECRET_KEY} \
             --txlog_rocksdb_cloud_object_store_service_url="${ELOQ_AWS_S3_ENDPOINT_URL}/${bucket_prefix}${bucket_name}/txlog" \
-            --eloq_store_cloud_access_key=${MINIO_ACCESS_KEY_ID} \
-            --eloq_store_cloud_secret_key=${MINIO_SECRECT_KEY} \
+            --aws_access_key_id=${ELOQ_AWS_ACCESS_KEY_ID} \
+            --aws_secret_key=${ELOQ_AWS_SECRET_KEY} \
             &>$PREFIX/log/eloqdoc.out &
 }
 
@@ -178,9 +180,11 @@ launch_eloqdoc_fast() {
             --data_substrate_config=./concourse/scripts/data_substrate.cnf \
             --eloq_store_cloud_endpoint=${ELOQ_AWS_S3_ENDPOINT_URL} \
             --eloq_store_cloud_store_path="${bucket_prefix}${bucket_name}/eloqstore"
+            --eloq_store_cloud_access_key=${ELOQ_AWS_ACCESS_KEY_ID} \
+            --eloq_store_cloud_secret_key=${ELOQ_AWS_SECRET_KEY} \
             --txlog_rocksdb_cloud_object_store_service_url="${ELOQ_AWS_S3_ENDPOINT_URL}/${bucket_prefix}${bucket_name}/txlog" \
-            --eloq_store_cloud_access_key=${MINIO_ACCESS_KEY_ID} \
-            --eloq_store_cloud_secret_key=${MINIO_SECRECT_KEY} \
+            --aws_access_key_id=${ELOQ_AWS_ACCESS_KEY_ID} \
+            --aws_secret_key=${ELOQ_AWS_SECRET_KEY} \
             --enable_wal=false \
             &>$PREFIX/log/eloqdoc.out &
 }
