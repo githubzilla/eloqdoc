@@ -16,5 +16,4 @@ ip_port_list=127.0.0.1:16379
 [store]
 # Max number of open files used by eloqstore(default: 1024)
 eloq_store_open_files_limit=1024
-eloq_store_data_path_list=install/eloqstore
 eloq_store_buffer_pool_size=5MB
