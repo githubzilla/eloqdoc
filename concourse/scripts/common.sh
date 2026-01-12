@@ -156,7 +156,7 @@ launch_eloqdoc() {
             --config=./concourse/scripts/eloqdoc.yaml \
 	          --data_substrate_config=./concourse/scripts/data_substrate.cnf \
             --eloq_store_cloud_endpoint=${ELOQ_AWS_S3_ENDPOINT_URL} \
-            --eloq_store_cloud_store_path="${bucket_prefix}${bucket_name}/eloqstore"
+            --eloq_store_cloud_store_path="${bucket_prefix}${bucket_name}/eloqstore" \
             --eloq_store_cloud_access_key=${ELOQ_AWS_ACCESS_KEY_ID} \
             --eloq_store_cloud_secret_key=${ELOQ_AWS_SECRET_KEY} \
             --txlog_rocksdb_cloud_object_store_service_url="${ELOQ_AWS_S3_ENDPOINT_URL}/${bucket_prefix}${bucket_name}/txlog" \
@@ -179,7 +179,7 @@ launch_eloqdoc_fast() {
             --config=./concourse/scripts/eloqdoc.yaml \
             --data_substrate_config=./concourse/scripts/data_substrate.cnf \
             --eloq_store_cloud_endpoint=${ELOQ_AWS_S3_ENDPOINT_URL} \
-            --eloq_store_cloud_store_path="${bucket_prefix}${bucket_name}/eloqstore"
+            --eloq_store_cloud_store_path="${bucket_prefix}${bucket_name}/eloqstore" \
             --eloq_store_cloud_access_key=${ELOQ_AWS_ACCESS_KEY_ID} \
             --eloq_store_cloud_secret_key=${ELOQ_AWS_SECRET_KEY} \
             --txlog_rocksdb_cloud_object_store_service_url="${ELOQ_AWS_S3_ENDPOINT_URL}/${bucket_prefix}${bucket_name}/txlog" \
