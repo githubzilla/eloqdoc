@@ -858,7 +858,7 @@ Status OptionsParser::readConfigFile(const std::string& filename, std::string* c
     if (config == NULL) {
         const int current_errno = errno;
         StringBuilder sb;
-        sb << "Error reading config file: " << strerror(current_errno);
+        sb << "Error reading config file: " << strerror(current_errno) << " ,filename: " << filename;
         return Status(ErrorCodes::InternalError, sb.str());
     }
     ON_BLOCK_EXIT(fclose, config);
